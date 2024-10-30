@@ -1,61 +1,70 @@
-# Use a build arg to ensure that both stages use the same,
-# hopefully current, go version.
+# Specify build arguments
 ARG GOLANG_BASE_IMAGE=golang:1.20-alpine
+ARG CMTHOME=/cometbft
+ARG USER=tmuser
+ARG GROUP=tmuser
 
-# stage 1 Generate CometBFT Binary
-FROM --platform=$BUILDPLATFORM $GOLANG_BASE_IMAGE as builder
-RUN apk update && \
-    apk upgrade && \
-    apk --no-cache add make git
-COPY / /cometbft
+# Stage 1: Build CometBFT Binary
+FROM --platform=$BUILDPLATFORM $GOLANG_BASE_IMAGE AS builder
+
+RUN apk add --no-cache \
+    make \
+    git
+
 WORKDIR /cometbft
-
+COPY . .
 RUN TARGETPLATFORM=$TARGETPLATFORM make build-linux
 
-# stage 2
+# Stage 2: Final Image
 FROM $GOLANG_BASE_IMAGE
-LABEL maintainer="hello@informal.systems"
 
-# CometBFT will be looking for the genesis file in /cometbft/config/genesis.json
-# (unless you change `genesis_file` in config.toml). You can put your config.toml and
-# private validator file into /cometbft/config.
-#
-# The /cometbft/data dir is used by CometBFT to store state.
-ENV CMTHOME /cometbft
+LABEL maintainer="hello@informal.systems" \
+      description="Baron Chain node" \
+      version="1.0" \
+      org.opencontainers.image.source="https://github.com/baron-chain/cometbft-bc"
 
-# OS environment setup
-# Set user right away for determinism, create directory for persistence and give our user ownership
-# jq and curl used for extracting `pub_key` from private validator while
-# deploying CometBFT with Kubernetes. It is nice to have bash so the users
-# could execute bash commands.
-RUN apk update && \
-    apk upgrade && \
-    apk --no-cache add curl jq bash && \
-    addgroup tmuser && \
-    adduser -S -G tmuser tmuser -h "$CMTHOME"
+# Import build arguments
+ARG CMTHOME
+ARG USER
+ARG GROUP
 
-# Run the container with tmuser by default. (UID=100, GID=1000)
-USER tmuser
+# Set environment variables
+ENV CMTHOME=$CMTHOME \
+    PROXY_APP=kvstore \
+    MONIKER=dockernode \
+    CHAIN_ID=dockerchain
 
+# Install dependencies and setup user
+RUN apk add --no-cache \
+        curl \
+        jq \
+        bash && \
+    addgroup -S $GROUP && \
+    adduser -S -G $GROUP $USER -h "$CMTHOME" && \
+    mkdir -p "$CMTHOME" && \
+    chown -R $USER:$GROUP "$CMTHOME"
+
+# Copy binary and entrypoint
+COPY --from=builder --chown=$USER:$GROUP /cometbft/build/cometbft /usr/bin/cometbft
+COPY --chown=$USER:$GROUP ./DOCKER/docker-entrypoint.sh /usr/local/bin/
+
+# Configure container
+USER $USER
 WORKDIR $CMTHOME
 
-# p2p, rpc and prometheus port
+# Expose ports (p2p, rpc, prometheus)
 EXPOSE 26656 26657 26660
 
+# Add healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:26657/status || exit 1
+
+# Set stop signal
 STOPSIGNAL SIGTERM
 
-COPY --from=builder /cometbft/build/cometbft /usr/bin/cometbft
+# Define volume for persistence
+VOLUME ["$CMTHOME"]
 
-# You can overwrite these before the first run to influence
-# config.json and genesis.json. Additionally, you can override
-# CMD to add parameters to `cometbft node`.
-ENV PROXY_APP=kvstore MONIKER=dockernode CHAIN_ID=dockerchain
-
-COPY ./DOCKER/docker-entrypoint.sh /usr/local/bin/
-
+# Set entrypoint and default command
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node"]
-
-# Expose the data directory as a volume since there's mutable state in there
-VOLUME [ "$CMTHOME" ]
-
