@@ -1,28 +1,46 @@
 FROM amazonlinux:2
 
-RUN yum -y update && \
-    yum -y install wget
+# Build arguments
+ARG GOVERSION=1.12.9
+ARG GO_DOWNLOAD_SHA256=ac2a6efcc1f5ec8bdc0db0a988bb1d301d64b6d61b7e8d9e42f662fbb75a2b9b
 
-RUN wget http://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm && \
-    rpm -ivh epel-release-latest-7.noarch.rpm
+# Environment variables
+ENV PATH=$PATH:/usr/local/go/bin:/go/bin \
+    GOBIN=/go/bin \
+    GOPATH=/go/src \
+    BUILD_DEPS="wget epel-release" \
+    DEV_DEPS="gcc gcc-c++ make git which leveldb-devel"
 
-RUN yum -y groupinstall "Development Tools"
-RUN yum -y install leveldb-devel which
+# Install dependencies and Go
+RUN set -eux; \
+    yum -y update && \
+    yum -y install $BUILD_DEPS && \
+    wget http://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm && \
+    rpm -ivh epel-release-latest-7.noarch.rpm && \
+    yum -y groupinstall "Development Tools" && \
+    yum -y install $DEV_DEPS && \
+    cd /tmp && \
+    wget -O go.tgz "https://dl.google.com/go/go${GOVERSION}.linux-amd64.tar.gz" && \
+    echo "${GO_DOWNLOAD_SHA256} go.tgz" | sha256sum -c - && \
+    tar -C /usr/local -xf go.tgz && \
+    rm -f go.tgz && \
+    mkdir -p /go/{src,bin} /cometbft && \
+    yum clean all && \
+    rm -rf /var/cache/yum /tmp/*
 
-ENV GOVERSION=1.12.9
-
-RUN cd /tmp && \
-    wget https://dl.google.com/go/go${GOVERSION}.linux-amd64.tar.gz && \
-    tar -C /usr/local -xf go${GOVERSION}.linux-amd64.tar.gz && \
-    mkdir -p /go/src && \
-    mkdir -p /go/bin
-
-ENV PATH=$PATH:/usr/local/go/bin:/go/bin
-ENV GOBIN=/go/bin
-ENV GOPATH=/go/src
-
-RUN mkdir -p /cometbft
 WORKDIR /cometbft
 
-CMD ["/usr/bin/make", "build", "COMETBFT_BUILD_OPTIONS=cleveldb"]
+# Build arguments for CometBFT
+ARG COMETBFT_BUILD_OPTIONS=cleveldb
 
+# Add healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD which make && make --version || exit 1
+
+# Set labels for better container management
+LABEL maintainer="Baron Chain Team" \
+      description="BARON CHAIN CometBFT Amazon Linux build environment" \
+      go_version=${GOVERSION} \
+      build_options=${COMETBFT_BUILD_OPTIONS}
+
+CMD ["/usr/bin/make", "build", "COMETBFT_BUILD_OPTIONS=cleveldb"]
