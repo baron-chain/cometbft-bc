@@ -1,16 +1,28 @@
-FROM golang:latest
+FROM golang:alpine
 
-# Grab deps (jq, hexdump, xxd, killall)
-RUN apt-get update && \
-  apt-get install -y --no-install-recommends \
-  jq bsdmainutils vim-common psmisc netcat
+# Expose ports for p2p and RPC
+EXPOSE 26656 26657
 
-# Add testing deps for curl
-RUN echo 'deb http://httpredir.debian.org/debian testing main non-free contrib' >> /etc/apt/sources.list && \
-  apt-get update && \
-  apt-get install -y --no-install-recommends curl
+# Install required packages
+RUN apk add --no-cache \
+    jq \
+    util-linux \
+    vim \
+    psmisc \
+    netcat-openbsd \
+    curl
 
+# Define volume for Go workspace
 VOLUME /go
 
-EXPOSE 26656
-EXPOSE 26657
+# Set default working directory
+WORKDIR /go
+
+# Add healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD nc -z localhost 26657 || exit 1
+
+# Set labels for better container management
+LABEL maintainer="Baron Chain Team" \
+      description="BARON CHAIN CometBFT testing environment" \
+      version="1.0"
