@@ -1,13 +1,26 @@
+version: v1
+
+# Build configuration
 build:
   roots:
     - proto
+
+# Lint rule configuration
 lint:
+  # Active lint rules
   use:
+    # Basic protobuf style and formatting
     - BASIC
+    # Enforce file naming convention
     - FILE_LOWER_SNAKE_CASE
+    # RPC method naming and design
     - UNARY_RPC
+  
+  # Ignored packages
   ignore:
     - gogoproto
+
+# Breaking change detection
 breaking:
   use:
     - FILE
