@@ -1,7 +1,11 @@
 coverage:
-  precision: 2
-  round: down
-  range: "70...100"
+  # Coverage reporting settings
+  settings:
+    precision: 2
+    round: down
+    range: "70...100"
+
+  # Status checks configuration
   status:
     project:
       default:
@@ -9,17 +13,23 @@ coverage:
     patch: off
     changes: off
 
+# GitHub integration
 github_checks:
   annotations: false
-
 comment: false
 
+# Ignored paths and files
 ignore:
+  # Documentation
   - "docs"
-  - "DOCKER"
-  - "scripts"
-  - "**/*.pb.go"
-  - "libs/pubsub/query/query.peg.go"
   - "*.md"
   - "*.rst"
+  
+  # Build and deployment
+  - "DOCKER"
+  - "scripts"
   - "*.yml"
+  
+  # Generated code
+  - "**/*.pb.go"
+  - "libs/pubsub/query/query.peg.go"
