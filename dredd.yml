@@ -1,33 +1,46 @@
-color: true
-dry-run: null
-hookfiles: build/contract_tests
-language: go
-require: null
-server: make localnet-start
-server-wait: 30
-init: false
-custom: {}
-names: false
-only: []
-reporter: []
-output: []
-header: []
-sorted: false
-user: null
-inline-errors: false
-details: false
-method: [GET]
-loglevel: warning
-path: []
-hooks-worker-timeout: 5000
-hooks-worker-connect-timeout: 1500
-hooks-worker-connect-retry: 500
-hooks-worker-after-connect-wait: 100
-hooks-worker-term-timeout: 5000
-hooks-worker-term-retry: 500
-hooks-worker-handler-host: 127.0.0.1
-hooks-worker-handler-port: 61321
+server:
+  endpoint: "http://127.0.0.1:26657/"
+  start-command: make localnet-start 
+  wait: 30
+
+test:
+  blueprint: ./rpc/openapi/openapi.yaml
+  hookfiles: build/contract_tests
+  language: go
+  method: [GET]
+  color: true
+
+hooks:
+  worker:
+    timeout: 5000
+    connect:
+      timeout: 1500
+      retry: 500
+      after-wait: 100
+    term:
+      timeout: 5000
+      retry: 500
+    handler:
+      host: 127.0.0.1
+      port: 61321
+
+execution:
+  dry-run: null
+  init: false
+  sorted: false
+  inline-errors: false
+  details: false
+  loglevel: warning
+
+output:
+  names: false
+  output: []
+  header: []
+  reporter: []
+
 config: ./dredd.yml
-# This path accepts no variables
-blueprint: ./rpc/openapi/openapi.yaml
-endpoint: "http://127.0.0.1:26657/"
+require: null
+custom: {}
+only: []
+path: []
+user: null
