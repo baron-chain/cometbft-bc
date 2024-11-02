@@ -1,28 +1,53 @@
-FROM golang:alpine
+# syntax=docker/dockerfile:1
 
-# Expose ports for p2p and RPC
-EXPOSE 26656 26657
+# Base image
+FROM golang:alpine AS builder
+
+# Build arguments
+ARG BUILD_VERSION="1.0"
+ARG BUILD_DATE="2024"
+
+# Environment variables
+ENV PACKAGES="jq util-linux vim psmisc netcat-openbsd curl"
+ENV WORKSPACE="/go"
+ENV P2P_PORT=26656
+ENV RPC_PORT=26657
 
 # Install required packages
-RUN apk add --no-cache \
-    jq \
-    util-linux \
-    vim \
-    psmisc \
-    netcat-openbsd \
-    curl
+RUN apk update && \
+    apk add --no-cache ${PACKAGES} && \
+    rm -rf /var/cache/apk/*
 
-# Define volume for Go workspace
-VOLUME /go
+# Set up workspace
+WORKDIR ${WORKSPACE}
 
-# Set default working directory
-WORKDIR /go
+# Create non-root user for better security
+RUN addgroup -S cometbft && \
+    adduser -S -G cometbft cometbft && \
+    chown -R cometbft:cometbft ${WORKSPACE}
 
-# Add healthcheck
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD nc -z localhost 26657 || exit 1
+# Switch to non-root user
+USER cometbft
 
-# Set labels for better container management
-LABEL maintainer="Baron Chain Team" \
-      description="BARON CHAIN CometBFT testing environment" \
-      version="1.0"
+# Volume configuration
+VOLUME ${WORKSPACE}
+
+# Expose ports
+EXPOSE ${P2P_PORT} ${RPC_PORT}
+
+# Health check configuration
+HEALTHCHECK --interval=30s \
+            --timeout=10s \
+            --start-period=5s \
+            --retries=3 \
+            CMD nc -z localhost ${RPC_PORT} || exit 1
+
+# Metadata
+LABEL org.opencontainers.image.title="BARON CHAIN CometBFT Testing" \
+      org.opencontainers.image.description="BARON CHAIN CometBFT testing environment" \
+      org.opencontainers.image.version=${BUILD_VERSION} \
+      org.opencontainers.image.created=${BUILD_DATE} \
+      org.opencontainers.image.authors="Baron Chain Team" \
+      org.opencontainers.image.vendor="Baron Chain" \
+      org.opencontainers.image.source="https://github.com/baron/cometbft" \
+      org.opencontainers.image.documentation="https://docs.baron.chain/cometbft"
