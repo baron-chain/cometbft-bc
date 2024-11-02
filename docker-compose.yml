@@ -1,58 +1,60 @@
 version: '3'
 
+x-node-defaults: &node-defaults
+  image: "cometbft/localnode"
+  volumes:
+    - ./build:/cometbft:Z
+  environment:
+    - LOG=${LOG:-cometbft.log}
+  networks:
+    localnet:
+      ipv4_address: 192.167.10.2
+
 services:
   node0:
+    <<: *node-defaults
     container_name: node0
-    image: "cometbft/localnode"
-    ports:
-      - "26656-26657:26656-26657"
     environment:
       - ID=0
       - LOG=${LOG:-cometbft.log}
-    volumes:
-      - ./build:/cometbft:Z
+    ports:
+      - "26656-26657:26656-26657"
     networks:
       localnet:
         ipv4_address: 192.167.10.2
 
   node1:
+    <<: *node-defaults
     container_name: node1
-    image: "cometbft/localnode"
-    ports:
-      - "26659-26660:26656-26657"
     environment:
       - ID=1
       - LOG=${LOG:-cometbft.log}
-    volumes:
-      - ./build:/cometbft:Z
+    ports:
+      - "26659-26660:26656-26657"
     networks:
       localnet:
         ipv4_address: 192.167.10.3
 
   node2:
+    <<: *node-defaults
     container_name: node2
-    image: "cometbft/localnode"
     environment:
       - ID=2
       - LOG=${LOG:-cometbft.log}
     ports:
       - "26661-26662:26656-26657"
-    volumes:
-      - ./build:/cometbft:Z
     networks:
       localnet:
         ipv4_address: 192.167.10.4
 
   node3:
+    <<: *node-defaults
     container_name: node3
-    image: "cometbft/localnode"
     environment:
       - ID=3
       - LOG=${LOG:-cometbft.log}
     ports:
       - "26663-26664:26656-26657"
-    volumes:
-      - ./build:/cometbft:Z
     networks:
       localnet:
         ipv4_address: 192.167.10.5
