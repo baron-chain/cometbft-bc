@@ -1,18 +1,242 @@
-echo hello
-info
-prepare_proposal "abc"
-process_proposal "abc"
-commit
-deliver_tx "abc"
-info
-commit
-query "abc"
-deliver_tx "def=xyz"
-commit
-query "def"
-prepare_proposal "preparedef"
-process_proposal "replacedef"
-process_proposal "preparedef"
-prepare_proposal
-process_proposal
-commit
+package tests
+
+import (
+	"testing"
+	"context"
+	"time"
+	"encoding/hex"
+
+	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/cometbft/cometbft/abci/types"
+)
+
+func TestABCISequence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	ts := newTestSetup(t)
+	defer ts.stop()
+	ts.start()
+
+	testCases := []struct {
+		name     string
+		commands []testCommand
+	}{
+		{
+			name: "Basic Echo and Info",
+			commands: []testCommand{
+				{
+					name: "Echo Test",
+					exec: func(t *testing.T, client abciclient.Client) {
+						res, err := client.EchoSync("hello")
+						require.NoError(t, err)
+						assert.Equal(t, "hello", res.Message)
+					},
+				},
+				{
+					name: "Info Check",
+					exec: func(t *testing.T, client abciclient.Client) {
+						res, err := client.InfoSync(types.RequestInfo{})
+						require.NoError(t, err)
+						assert.NotNil(t, res)
+					},
+				},
+			},
+		},
+		{
+			name: "Proposal Flow",
+			commands: []testCommand{
+				{
+					name: "Prepare Proposal ABC",
+					exec: func(t *testing.T, client abciclient.Client) {
+						req := types.RequestPrepareProposal{
+							Txs: [][]byte{[]byte("abc")},
+						}
+						res, err := client.PrepareProposalSync(req)
+						require.NoError(t, err)
+						assert.NotNil(t, res)
+					},
+				},
+				{
+					name: "Process Proposal ABC",
+					exec: func(t *testing.T, client abciclient.Client) {
+						req := types.RequestProcessProposal{
+							Txs: [][]byte{[]byte("abc")},
+						}
+						res, err := client.ProcessProposalSync(req)
+						require.NoError(t, err)
+						assert.NotNil(t, res)
+					},
+				},
+			},
+		},
+		{
+			name: "Transaction Flow",
+			commands: []testCommand{
+				{
+					name: "Commit Initial State",
+					exec: func(t *testing.T, client abciclient.Client) {
+						res, err := client.CommitSync()
+						require.NoError(t, err)
+						assert.NotNil(t, res)
+					},
+				},
+				{
+					name: "Deliver ABC Transaction",
+					exec: func(t *testing.T, client abciclient.Client) {
+						req := types.RequestDeliverTx{
+							Tx: []byte("abc"),
+						}
+						res, err := client.DeliverTxSync(req)
+						require.NoError(t, err)
+						assert.Equal(t, uint32(0), res.Code) // Success code
+					},
+				},
+				{
+					name: "Query ABC Value",
+					exec: func(t *testing.T, client abciclient.Client) {
+						req := types.RequestQuery{
+							Data: []byte("abc"),
+							Path: "/store",
+						}
+						res, err := client.QuerySync(req)
+						require.NoError(t, err)
+						assert.Equal(t, uint32(0), res.Code)
+					},
+				},
+			},
+		},
+		{
+			name: "Key-Value Operations",
+			commands: []testCommand{
+				{
+					name: "Set Key-Value Pair",
+					exec: func(t *testing.T, client abciclient.Client) {
+						req := types.RequestDeliverTx{
+							Tx: []byte("def=xyz"),
+						}
+						res, err := client.DeliverTxSync(req)
+						require.NoError(t, err)
+						assert.Equal(t, uint32(0), res.Code)
+					},
+				},
+				{
+					name: "Commit Changes",
+					exec: func(t *testing.T, client abciclient.Client) {
+						res, err := client.CommitSync()
+						require.NoError(t, err)
+						assert.NotNil(t, res.Data)
+					},
+				},
+				{
+					name: "Query Key Value",
+					exec: func(t *testing.T, client abciclient.Client) {
+						req := types.RequestQuery{
+							Data: []byte("def"),
+							Path: "/store",
+						}
+						res, err := client.QuerySync(req)
+						require.NoError(t, err)
+						assert.Equal(t, []byte("xyz"), res.Value)
+					},
+				},
+			},
+		},
+		{
+			name: "Advanced Proposal Handling",
+			commands: []testCommand{
+				{
+					name: "Prepare Custom Proposal",
+					exec: func(t *testing.T, client abciclient.Client) {
+						req := types.RequestPrepareProposal{
+							Txs: [][]byte{[]byte("preparedef")},
+						}
+						res, err := client.PrepareProposalSync(req)
+						require.NoError(t, err)
+						assert.NotNil(t, res)
+					},
+				},
+				{
+					name: "Process Different Proposal",
+					exec: func(t *testing.T, client abciclient.Client) {
+						req := types.RequestProcessProposal{
+							Txs: [][]byte{[]byte("replacedef")},
+						}
+						res, err := client.ProcessProposalSync(req)
+						require.NoError(t, err)
+						assert.NotNil(t, res)
+					},
+				},
+				{
+					name: "Process Original Proposal",
+					exec: func(t *testing.T, client abciclient.Client) {
+						req := types.RequestProcessProposal{
+							Txs: [][]byte{[]byte("preparedef")},
+						}
+						res, err := client.ProcessProposalSync(req)
+						require.NoError(t, err)
+						assert.NotNil(t, res)
+					},
+				},
+			},
+		},
+		{
+			name: "Empty Proposal Handling",
+			commands: []testCommand{
+				{
+					name: "Empty Prepare Proposal",
+					exec: func(t *testing.T, client abciclient.Client) {
+						req := types.RequestPrepareProposal{}
+						res, err := client.PrepareProposalSync(req)
+						require.NoError(t, err)
+						assert.NotNil(t, res)
+					},
+				},
+				{
+					name: "Empty Process Proposal",
+					exec: func(t *testing.T, client abciclient.Client) {
+						req := types.RequestProcessProposal{}
+						res, err := client.ProcessProposalSync(req)
+						require.NoError(t, err)
+						assert.NotNil(t, res)
+					},
+				},
+				{
+					name: "Final Commit",
+					exec: func(t *testing.T, client abciclient.Client) {
+						res, err := client.CommitSync()
+						require.NoError(t, err)
+						assert.NotNil(t, res)
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, cmd := range tc.commands {
+				t.Run(cmd.name, func(t *testing.T) {
+					select {
+					case <-ctx.Done():
+						t.Fatal("Test timeout")
+					default:
+						cmd.exec(t, ts.client)
+					}
+				})
+			}
+		})
+	}
+}
+
+type testCommand struct {
+	name string
+	exec func(*testing.T, abciclient.Client)
+}
+
+// Helper function to print hexadecimal representation of response data
+func dumpHex(data []byte) string {
+	return hex.EncodeToString(data)
+}
