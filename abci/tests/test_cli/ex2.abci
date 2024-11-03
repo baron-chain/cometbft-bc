@@ -1,7 +1,27 @@
+# Transaction Validation Tests
 check_tx 0x00
+>> code: OK
+
 check_tx 0xff
+>> code: OK
+
+# Initial Transaction Delivery
 deliver_tx 0x00
+>> code: OK
+
+# Additional Transaction Validation
 check_tx 0x00
+>> code: OK
+
+# Multiple Transaction Deliveries
 deliver_tx 0x01
+>> code: OK
+
 deliver_tx 0x04
+>> code: OK
+
+# State Query
 info
+>> code: OK
+>> data: {"size":3}
+>> data.hex: 7B2273697A65223A337D
