@@ -7,19 +7,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cosmos/gogoproto/proto"
-	gogotypes "github.com/cosmos/gogoproto/types"
+	"github.com/baron-chain/gogoproto-bc/proto"
+	gogotypes "github.com/baron-chain/gogoproto-bc/types"
 
-	"github.com/cometbft/cometbft/crypto"
-	"github.com/cometbft/cometbft/crypto/merkle"
-	"github.com/cometbft/cometbft/crypto/tmhash"
-	"github.com/cometbft/cometbft/libs/bits"
-	cmtbytes "github.com/cometbft/cometbft/libs/bytes"
-	cmtmath "github.com/cometbft/cometbft/libs/math"
-	cmtsync "github.com/cometbft/cometbft/libs/sync"
-	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
-	cmtversion "github.com/cometbft/cometbft/proto/tendermint/version"
-	"github.com/cometbft/cometbft/version"
+	"github.com/baron-chain/cometbft-bc/crypto"
+	"github.com/baron-chain/cometbft-bc/crypto/merkle"
+	"github.com/baron-chain/cometbft-bc/crypto/tmhash"
+	"github.com/baron-chain/cometbft-bc/libs/bits"
+	cmtbytes "github.com/baron-chain/cometbft-bc/libs/bytes"
+	cmtmath "github.com/baron-chain/cometbft-bc/libs/math"
+	cmtsync "github.com/baron-chain/cometbft-bc/libs/sync"
+	cmtproto "github.com/baron-chain/cometbft-bc/proto/tendermint/types"
+	cmtversion "github.com/baron-chain/cometbft-bc/proto/tendermint/version"
+	"github.com/baron-chain/cometbft-bc/version"
 )
 
 const (
