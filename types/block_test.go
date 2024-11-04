@@ -11,20 +11,20 @@ import (
 	"testing"
 	"time"
 
-	gogotypes "github.com/cosmos/gogoproto/types"
+	gogotypes "github.com/baron-chain/gogoproto-bc/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/cometbft/cometbft/crypto"
-	"github.com/cometbft/cometbft/crypto/merkle"
-	"github.com/cometbft/cometbft/crypto/tmhash"
-	"github.com/cometbft/cometbft/libs/bits"
-	"github.com/cometbft/cometbft/libs/bytes"
-	cmtrand "github.com/cometbft/cometbft/libs/rand"
-	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
-	cmtversion "github.com/cometbft/cometbft/proto/tendermint/version"
-	cmttime "github.com/cometbft/cometbft/types/time"
-	"github.com/cometbft/cometbft/version"
+	"github.com/baron-chain/cometbft-bc/crypto"
+	"github.com/baron-chain/cometbft-bc/crypto/merkle"
+	"github.com/baron-chain/cometbft-bc/crypto/tmhash"
+	"github.com/baron-chain/cometbft-bc/libs/bits"
+	"github.com/baron-chain/cometbft-bc/libs/bytes"
+	cmtrand "github.com/baron-chain/cometbft-bc/libs/rand"
+	cmtproto "github.com/baron-chain/cometbft-bc/proto/tendermint/types"
+	cmtversion "github.com/baron-chain/cometbft-bc/proto/tendermint/version"
+	cmttime "github.com/baron-chain/cometbft-bc/types/time"
+	"github.com/baron-chain/cometbft-bc/version"
 )
 
 func TestMain(m *testing.M) {
