@@ -1,73 +1,108 @@
 package types
 
 import (
+	"fmt"
 	"time"
 
 	cmtproto "github.com/baron-chain/cometbft-bc/proto/tendermint/types"
 	cmttime "github.com/baron-chain/cometbft-bc/types/time"
 )
 
-// Canonical* wraps the structs in types for amino encoding them for use in SignBytes / the Signable interface.
-
-// TimeFormat is used for generating the sigs
+// TimeFormat defines the canonical time format for use in signatures
 const TimeFormat = time.RFC3339Nano
 
-//-----------------------------------
-// Canonicalize the structs
+// Canonicalizer is an interface for types that can be converted to their canonical form
+type Canonicalizer[T any] interface {
+	Canonicalize() T
+}
 
-func CanonicalizeBlockID(bid cmtproto.BlockID) *cmtproto.CanonicalBlockID {
+// CanonicalizeBlockID converts a BlockID to its canonical form
+// Returns nil if the input represents a zero or nil BlockID
+func CanonicalizeBlockID(bid cmtproto.BlockID) (*cmtproto.CanonicalBlockID, error) {
 	rbid, err := BlockIDFromProto(&bid)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert BlockID from proto: %w", err)
+	}
+
+	if rbid == nil || rbid.IsZero() {
+		return nil, nil
+	}
+
+	return &cmtproto.CanonicalBlockID{
+		Hash:          bid.Hash,
+		PartSetHeader: CanonicalizePartSetHeader(bid.PartSetHeader),
+	}, nil
+}
+
+// MustCanonicalizeBlockID is like CanonicalizeBlockID but panics on error
+func MustCanonicalizeBlockID(bid cmtproto.BlockID) *cmtproto.CanonicalBlockID {
+	canonical, err := CanonicalizeBlockID(bid)
 	if err != nil {
 		panic(err)
 	}
-	var cbid *cmtproto.CanonicalBlockID
-	if rbid == nil || rbid.IsZero() {
-		cbid = nil
-	} else {
-		cbid = &cmtproto.CanonicalBlockID{
-			Hash:          bid.Hash,
-			PartSetHeader: CanonicalizePartSetHeader(bid.PartSetHeader),
-		}
-	}
-
-	return cbid
+	return canonical
 }
 
-// CanonicalizeVote transforms the given PartSetHeader to a CanonicalPartSetHeader.
+// CanonicalizePartSetHeader converts a PartSetHeader to its canonical form
 func CanonicalizePartSetHeader(psh cmtproto.PartSetHeader) cmtproto.CanonicalPartSetHeader {
 	return cmtproto.CanonicalPartSetHeader(psh)
 }
 
-// CanonicalizeVote transforms the given Proposal to a CanonicalProposal.
-func CanonicalizeProposal(chainID string, proposal *cmtproto.Proposal) cmtproto.CanonicalProposal {
+// CanonicalizeProposal converts a Proposal to its canonical form for signing
+func CanonicalizeProposal(chainID string, proposal *cmtproto.Proposal) (cmtproto.CanonicalProposal, error) {
+	blockID, err := CanonicalizeBlockID(proposal.BlockID)
+	if err != nil {
+		return cmtproto.CanonicalProposal{}, fmt.Errorf("failed to canonicalize BlockID: %w", err)
+	}
+
 	return cmtproto.CanonicalProposal{
 		Type:      cmtproto.ProposalType,
-		Height:    proposal.Height,       // encoded as sfixed64
-		Round:     int64(proposal.Round), // encoded as sfixed64
+		Height:    proposal.Height,
+		Round:     int64(proposal.Round),
 		POLRound:  int64(proposal.PolRound),
-		BlockID:   CanonicalizeBlockID(proposal.BlockID),
+		BlockID:   blockID,
 		Timestamp: proposal.Timestamp,
 		ChainID:   chainID,
-	}
+	}, nil
 }
 
-// CanonicalizeVote transforms the given Vote to a CanonicalVote, which does
-// not contain ValidatorIndex and ValidatorAddress fields.
-func CanonicalizeVote(chainID string, vote *cmtproto.Vote) cmtproto.CanonicalVote {
+// MustCanonicalizeProposal is like CanonicalizeProposal but panics on error
+func MustCanonicalizeProposal(chainID string, proposal *cmtproto.Proposal) cmtproto.CanonicalProposal {
+	canonical, err := CanonicalizeProposal(chainID, proposal)
+	if err != nil {
+		panic(err)
+	}
+	return canonical
+}
+
+// CanonicalizeVote converts a Vote to its canonical form for signing
+// The canonical form excludes ValidatorIndex and ValidatorAddress fields
+func CanonicalizeVote(chainID string, vote *cmtproto.Vote) (cmtproto.CanonicalVote, error) {
+	blockID, err := CanonicalizeBlockID(vote.BlockID)
+	if err != nil {
+		return cmtproto.CanonicalVote{}, fmt.Errorf("failed to canonicalize BlockID: %w", err)
+	}
+
 	return cmtproto.CanonicalVote{
 		Type:      vote.Type,
-		Height:    vote.Height,       // encoded as sfixed64
-		Round:     int64(vote.Round), // encoded as sfixed64
-		BlockID:   CanonicalizeBlockID(vote.BlockID),
+		Height:    vote.Height,
+		Round:     int64(vote.Round),
+		BlockID:   blockID,
 		Timestamp: vote.Timestamp,
 		ChainID:   chainID,
-	}
+	}, nil
 }
 
-// CanonicalTime can be used to stringify time in a canonical way.
+// MustCanonicalizeVote is like CanonicalizeVote but panics on error
+func MustCanonicalizeVote(chainID string, vote *cmtproto.Vote) cmtproto.CanonicalVote {
+	canonical, err := CanonicalizeVote(chainID, vote)
+	if err != nil {
+		panic(err)
+	}
+	return canonical
+}
+
+// CanonicalTime formats time in the canonical format, ensuring UTC timezone
 func CanonicalTime(t time.Time) string {
-	// Note that sending time over amino resets it to
-	// local time, we need to force UTC here, so the
-	// signatures match
 	return cmttime.Canonical(t).Format(TimeFormat)
 }
