@@ -1,31 +1,26 @@
 package types
 
-import (
-	"sort"
-)
+import "sort"
 
-//------------------------------------------------------------------------------
-
-// ValidatorUpdates is a list of validators that implements the Sort interface
+// ValidatorUpdates represents a sortable list of validator updates.
+// It implements sort.Interface for deterministic ordering.
 type ValidatorUpdates []ValidatorUpdate
 
+// Ensure ValidatorUpdates implements sort.Interface at compile time
 var _ sort.Interface = (ValidatorUpdates)(nil)
 
-// All these methods for ValidatorUpdates:
-//    Len, Less and Swap
-// are for ValidatorUpdates to implement sort.Interface
-// which will be used by the sort package.
-// See Issue https://github.com/tendermint/abci/issues/212
-
+// Len returns the number of validators in the update list.
 func (v ValidatorUpdates) Len() int {
 	return len(v)
 }
 
-// XXX: doesn't distinguish same validator with different power
+// Less compares validators by their public keys.
+// Returns true if validator at index i should be ordered before validator at index j.
 func (v ValidatorUpdates) Less(i, j int) bool {
 	return v[i].PubKey.Compare(v[j].PubKey) <= 0
 }
 
+// Swap exchanges validators at indices i and j.
 func (v ValidatorUpdates) Swap(i, j int) {
 	v[i], v[j] = v[j], v[i]
 }
