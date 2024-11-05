@@ -1,6 +1,6 @@
 server:
   endpoint: "http://127.0.0.1:26657/"
-  start-command: make localnet-start 
+  start-command: make localnet-start
   wait: 30
 
 test:
@@ -25,22 +25,6 @@ hooks:
       port: 61321
 
 execution:
-  dry-run: null
-  init: false
-  sorted: false
-  inline-errors: false
-  details: false
   loglevel: warning
 
-output:
-  names: false
-  output: []
-  header: []
-  reporter: []
-
 config: ./dredd.yml
-require: null
-custom: {}
-only: []
-path: []
-user: null
