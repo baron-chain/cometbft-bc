@@ -1,4 +1,4 @@
-module github.com/cometbft/cometbft
+module github.com/baron-chain/cometbft-bc
 
 go 1.20
 
