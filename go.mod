@@ -299,5 +299,6 @@ require (
 
 replace (
 	github.com/cometbft/cometbft-db => github.com/baron-chain/cometbft-db-bc v0.7.0
+	github.com/cosmos/gogoproto => github.com/baron-chain/gogoproto-bc v1.4.1
 
 )
