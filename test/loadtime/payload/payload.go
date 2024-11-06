@@ -2,100 +2,282 @@ package payload
 
 import (
 	"bytes"
-	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"math"
+	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
-	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const keyPrefix = "a="
-const maxPayloadSize = 4 * 1024 * 1024
+func TestNewBytes(t *testing.T) {
+	timestamp := timestamppb.New(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
 
-// NewBytes generates a new payload and returns the encoded representation of
-// the payload as a slice of bytes. NewBytes uses the fields on the Options
-// to create the payload.
-func NewBytes(p *Payload) ([]byte, error) {
-	p.Padding = make([]byte, 1)
-	if p.Time == nil {
-		p.Time = timestamppb.Now()
-	}
-	us, err := CalculateUnpaddedSize(p)
-	if err != nil {
-		return nil, err
-	}
-	if p.Size > maxPayloadSize {
-		return nil, fmt.Errorf("configured size %d is too large (>%d)", p.Size, maxPayloadSize)
-	}
-	pSize := int(p.Size) // #nosec -- The "if" above makes this cast safe
-	if pSize < us {
-		return nil, fmt.Errorf("configured size %d not large enough to fit unpadded transaction of size %d", pSize, us)
+	tests := []struct {
+		name        string
+		payload     *Payload
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "valid payload with minimum size",
+			payload: &Payload{
+				Time:        timestamp,
+				Size:        100,
+				Connections: 1,
+				Rate:        1000,
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid payload with maximum size",
+			payload: &Payload{
+				Time:        timestamp,
+				Size:        maxPayloadSize,
+				Connections: math.MaxUint64,
+				Rate:        math.MaxUint64,
+			},
+			wantErr: false,
+		},
+		{
+			name: "payload too large",
+			payload: &Payload{
+				Time:        timestamp,
+				Size:        maxPayloadSize + 1,
+				Connections: 1,
+				Rate:        1000,
+			},
+			wantErr:     true,
+			errContains: "too large",
+		},
+		{
+			name: "size too small for payload",
+			payload: &Payload{
+				Time:        timestamp,
+				Size:        10,
+				Connections: math.MaxUint64,
+				Rate:        math.MaxUint64,
+			},
+			wantErr:     true,
+			errContains: "not large enough",
+		},
+		{
+			name: "nil timestamp",
+			payload: &Payload{
+				Time:        nil,
+				Size:        1000,
+				Connections: 1,
+				Rate:        1000,
+			},
+			wantErr: false,
+		},
 	}
 
-	// We halve the padding size because we transform the TX to hex
-	p.Padding = make([]byte, (pSize-us)/2)
-	_, err = rand.Read(p.Padding)
-	if err != nil {
-		return nil, err
-	}
-	b, err := proto.Marshal(p)
-	if err != nil {
-		return nil, err
-	}
-	h := []byte(hex.EncodeToString(b))
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := NewBytes(tc.payload)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errContains)
+				return
+			}
 
-	// prepend a single key so that the kv store only ever stores a single
-	// transaction instead of storing all tx and ballooning in size.
-	return append([]byte(keyPrefix), h...), nil
+			require.NoError(t, err)
+			assert.True(t, bytes.HasPrefix(result, []byte(keyPrefix)))
+			
+			// Verify the result can be decoded back
+			decoded, err := FromBytes(result)
+			require.NoError(t, err)
+			assert.Equal(t, tc.payload.Size, decoded.Size)
+			assert.Equal(t, tc.payload.Connections, decoded.Connections)
+			assert.Equal(t, tc.payload.Rate, decoded.Rate)
+		})
+	}
 }
 
-// FromBytes extracts a paylod from the byte representation of the payload.
-// FromBytes leaves the padding untouched, returning it to the caller to handle
-// or discard per their preference.
-func FromBytes(b []byte) (*Payload, error) {
-	trH := bytes.TrimPrefix(b, []byte(keyPrefix))
-	if bytes.Equal(b, trH) {
-		return nil, fmt.Errorf("payload bytes missing key prefix '%s'", keyPrefix)
+func TestFromBytes(t *testing.T) {
+	validPayload := &Payload{
+		Time:        timestamppb.Now(),
+		Size:        1000,
+		Connections: 1,
+		Rate:        1000,
+		Padding:     make([]byte, 1),
 	}
-	trB, err := hex.DecodeString(string(trH))
-	if err != nil {
-		return nil, err
+	validBytes, err := proto.Marshal(validPayload)
+	require.NoError(t, err)
+	validHex := []byte(keyPrefix + hex.EncodeToString(validBytes))
+
+	tests := []struct {
+		name        string
+		input       []byte
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:    "valid payload",
+			input:   validHex,
+			wantErr: false,
+		},
+		{
+			name:        "missing prefix",
+			input:       []byte("1234"),
+			wantErr:     true,
+			errContains: "missing key prefix",
+		},
+		{
+			name:        "invalid hex",
+			input:       []byte(keyPrefix + "ZZ"),
+			wantErr:     true,
+			errContains: "encoding/hex",
+		},
+		{
+			name:        "invalid protobuf",
+			input:       []byte(keyPrefix + "1234"),
+			wantErr:     true,
+			errContains: "proto:",
+		},
+		{
+			name:        "empty input",
+			input:       []byte{},
+			wantErr:     true,
+			errContains: "missing key prefix",
+		},
 	}
 
-	p := &Payload{}
-	err = proto.Unmarshal(trB, p)
-	if err != nil {
-		return nil, err
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := FromBytes(tc.input)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.NotNil(t, result)
+			assert.NotNil(t, result.Time)
+		})
 	}
-	return p, nil
 }
 
-// MaxUnpaddedSize returns the maximum size that a payload may be if no padding
-// is included.
-func MaxUnpaddedSize() (int, error) {
-	p := &Payload{
+func TestMaxUnpaddedSize(t *testing.T) {
+	size, err := MaxUnpaddedSize()
+	require.NoError(t, err)
+	assert.Greater(t, size, 0)
+
+	// Verify the size is sufficient for maximum values
+	maxPayload := &Payload{
 		Time:        timestamppb.Now(),
 		Connections: math.MaxUint64,
 		Rate:        math.MaxUint64,
 		Size:        math.MaxUint64,
 		Padding:     make([]byte, 1),
 	}
-	return CalculateUnpaddedSize(p)
+
+	calcSize, err := CalculateUnpaddedSize(maxPayload)
+	require.NoError(t, err)
+	assert.Equal(t, size, calcSize)
 }
 
-// CalculateUnpaddedSize calculates the size of the passed in payload for the
-// purpose of determining how much padding to add to add to reach the target size.
-// CalculateUnpaddedSize returns an error if the payload Padding field is longer than 1.
-func CalculateUnpaddedSize(p *Payload) (int, error) {
-	if len(p.Padding) != 1 {
-		return 0, fmt.Errorf("expected length of padding to be 1, received %d", len(p.Padding))
+func TestCalculateUnpaddedSize(t *testing.T) {
+	timestamp := timestamppb.Now()
+
+	tests := []struct {
+		name        string
+		payload     *Payload
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "valid payload",
+			payload: &Payload{
+				Time:        timestamp,
+				Size:        1000,
+				Connections: 1,
+				Rate:        1000,
+				Padding:     make([]byte, 1),
+			},
+			wantErr: false,
+		},
+		{
+			name: "no padding",
+			payload: &Payload{
+				Time:        timestamp,
+				Size:        1000,
+				Connections: 1,
+				Rate:        1000,
+				Padding:     []byte{},
+			},
+			wantErr:     true,
+			errContains: "expected length of padding to be 1",
+		},
+		{
+			name: "too much padding",
+			payload: &Payload{
+				Time:        timestamp,
+				Size:        1000,
+				Connections: 1,
+				Rate:        1000,
+				Padding:     make([]byte, 10),
+			},
+			wantErr:     true,
+			errContains: "expected length of padding to be 1",
+		},
 	}
-	b, err := proto.Marshal(p)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			size, err := CalculateUnpaddedSize(tc.payload)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errContains)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Greater(t, size, 0)
+			assert.True(t, size > len(keyPrefix))
+		})
+	}
+}
+
+func BenchmarkNewBytes(b *testing.B) {
+	payload := &Payload{
+		Time:        timestamppb.Now(),
+		Size:        1000,
+		Connections: 1,
+		Rate:        1000,
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := NewBytes(payload)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkFromBytes(b *testing.B) {
+	payload := &Payload{
+		Time:        timestamppb.Now(),
+		Size:        1000,
+		Connections: 1,
+		Rate:        1000,
+	}
+	bytes, err := NewBytes(payload)
 	if err != nil {
-		return 0, err
+		b.Fatal(err)
 	}
-	h := []byte(hex.EncodeToString(b))
-	return len(h) + len(keyPrefix), nil
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := FromBytes(bytes)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
 }
