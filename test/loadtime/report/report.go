@@ -1,220 +1,269 @@
 package report
 
 import (
-	"math"
-	"sync"
+	"testing"
 	"time"
 
 	"github.com/cometbft/cometbft/test/loadtime/payload"
 	"github.com/cometbft/cometbft/types"
 	"github.com/gofrs/uuid"
-	"gonum.org/v1/gonum/stat"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// BlockStore defines the set of methods needed by the report generator from
-// CometBFT's store.Blockstore type. Using an interface allows for tests to
-// more easily simulate the required behavior without having to use the more
-// complex real API.
-type BlockStore interface {
-	Height() int64
-	Base() int64
-	LoadBlock(int64) *types.Block
+// MockBlockStore implements BlockStore interface for testing
+type MockBlockStore struct {
+	blocks map[int64]*types.Block
+	base   int64
+	height int64
 }
 
-// DataPoint contains the set of data collected for each transaction.
-type DataPoint struct {
-	Duration  time.Duration
-	BlockTime time.Time
-	Hash      []byte
+func NewMockBlockStore(base, height int64) *MockBlockStore {
+	return &MockBlockStore{
+		blocks: make(map[int64]*types.Block),
+		base:   base,
+		height: height,
+	}
 }
 
-// Report contains the data calculated from reading the timestamped transactions
-// of each block found in the blockstore.
-type Report struct {
-	ID                      uuid.UUID
-	Rate, Connections, Size uint64
-	Max, Min, Avg, StdDev   time.Duration
-
-	// NegativeCount is the number of negative durations encountered while
-	// reading the transaction data. A negative duration means that
-	// a transaction timestamp was greater than the timestamp of the block it
-	// was included in and likely indicates an issue with the experimental
-	// setup.
-	NegativeCount int
-
-	// All contains all data points gathered from all valid transactions.
-	// The order of the contents of All is not guaranteed to be match the order of transactions
-	// in the chain.
-	All []DataPoint
-
-	// used for calculating average during report creation.
-	sum int64
+func (m *MockBlockStore) Height() int64 { return m.height }
+func (m *MockBlockStore) Base() int64   { return m.base }
+func (m *MockBlockStore) LoadBlock(height int64) *types.Block {
+	return m.blocks[height]
 }
 
-type Reports struct {
-	s map[uuid.UUID]Report
-	l []Report
-
-	// errorCount is the number of parsing errors encountered while reading the
-	// transaction data. Parsing errors may occur if a transaction not generated
-	// by the payload package is submitted to the chain.
-	errorCount int
+func (m *MockBlockStore) AddBlock(height int64, block *types.Block) {
+	m.blocks[height] = block
 }
 
-func (rs *Reports) List() []Report {
-	return rs.l
+func TestReportsAddDataPoint(t *testing.T) {
+	tests := []struct {
+		name         string
+		duration     time.Duration
+		expectedAvg  time.Duration
+		expectedMax  time.Duration
+		expectedMin  time.Duration
+		connections  uint64
+		rate         uint64
+		size         uint64
+		expectedNeg  int
+		multipleData bool
+	}{
+		{
+			name:        "single positive duration",
+			duration:    100 * time.Millisecond,
+			expectedAvg: 100 * time.Millisecond,
+			expectedMax: 100 * time.Millisecond,
+			expectedMin: 100 * time.Millisecond,
+			connections: 1,
+			rate:       1000,
+			size:       1024,
+			expectedNeg: 0,
+		},
+		{
+			name:        "single negative duration",
+			duration:    -100 * time.Millisecond,
+			expectedAvg: -100 * time.Millisecond,
+			expectedMax: -100 * time.Millisecond,
+			expectedMin: -100 * time.Millisecond,
+			connections: 1,
+			rate:       1000,
+			size:       1024,
+			expectedNeg: 1,
+		},
+		{
+			name:         "multiple durations",
+			duration:     100 * time.Millisecond,
+			expectedAvg:  150 * time.Millisecond,
+			expectedMax:  200 * time.Millisecond,
+			expectedMin:  100 * time.Millisecond,
+			connections:  2,
+			rate:        2000,
+			size:        2048,
+			expectedNeg:  0,
+			multipleData: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reports := &Reports{
+				s: make(map[uuid.UUID]Report),
+			}
+
+			id := uuid.Must(uuid.NewV4())
+			blockTime := time.Now()
+			hash := []byte("test_hash")
+
+			reports.addDataPoint(id, tc.duration, blockTime, hash, tc.connections, tc.rate, tc.size)
+			
+			if tc.multipleData {
+				reports.addDataPoint(id, 200*time.Millisecond, blockTime, hash, tc.connections, tc.rate, tc.size)
+			}
+
+			reports.calculateAll()
+			require.Len(t, reports.List(), 1)
+
+			report := reports.List()[0]
+			assert.Equal(t, id, report.ID)
+			assert.Equal(t, tc.connections, report.Connections)
+			assert.Equal(t, tc.rate, report.Rate)
+			assert.Equal(t, tc.size, report.Size)
+			assert.Equal(t, tc.expectedNeg, report.NegativeCount)
+			assert.Equal(t, tc.expectedAvg, report.Avg)
+			assert.Equal(t, tc.expectedMax, report.Max)
+			assert.Equal(t, tc.expectedMin, report.Min)
+		})
+	}
 }
 
-func (rs *Reports) ErrorCount() int {
-	return rs.errorCount
-}
+func TestGenerateFromBlockStore(t *testing.T) {
+	store := NewMockBlockStore(1, 4)
 
-func (rs *Reports) addDataPoint(id uuid.UUID, l time.Duration, bt time.Time, hash []byte, conns, rate, size uint64) {
-	r, ok := rs.s[id]
-	if !ok {
-		r = Report{
-			Max:         0,
-			Min:         math.MaxInt64,
-			ID:          id,
-			Connections: conns,
-			Rate:        rate,
-			Size:        size,
+	// Create test transactions
+	id1 := uuid.Must(uuid.NewV4())
+	id2 := uuid.Must(uuid.NewV4())
+	
+	// Create payload data
+	testTime := time.Now()
+	p1 := &payload.Payload{
+		Id:          id1[:],
+		Time:        timestamppb.New(testTime),
+		Connections: 1,
+		Rate:        1000,
+		Size:        1024,
+	}
+	p2 := &payload.Payload{
+		Id:          id2[:],
+		Time:        timestamppb.New(testTime.Add(time.Second)),
+		Connections: 2,
+		Rate:        2000,
+		Size:        2048,
+	}
+
+	tx1, err := payload.ToBytes(p1)
+	require.NoError(t, err)
+	tx2, err := payload.ToBytes(p2)
+	require.NoError(t, err)
+
+	// Create blocks with transactions
+	block1 := &types.Block{
+		Header: types.Header{
+			Height: 1,
+			Time:   testTime,
+		},
+		Data: types.Data{
+			Txs: []types.Tx{tx1},
+		},
+	}
+	block2 := &types.Block{
+		Header: types.Header{
+			Height: 2,
+			Time:   testTime.Add(2 * time.Second),
+		},
+		Data: types.Data{
+			Txs: []types.Tx{tx2},
+		},
+	}
+	block3 := &types.Block{
+		Header: types.Header{
+			Height: 3,
+			Time:   testTime.Add(3 * time.Second),
+		},
+	}
+
+	store.AddBlock(1, block1)
+	store.AddBlock(2, block2)
+	store.AddBlock(3, block3)
+
+	reports, err := GenerateFromBlockStore(store)
+	require.NoError(t, err)
+
+	// Verify reports
+	require.Len(t, reports.List(), 2)
+	assert.Equal(t, 0, reports.ErrorCount())
+
+	for _, report := range reports.List() {
+		if report.ID == id1 {
+			assert.Equal(t, uint64(1), report.Connections)
+			assert.Equal(t, uint64(1000), report.Rate)
+			assert.Equal(t, uint64(1024), report.Size)
+		} else if report.ID == id2 {
+			assert.Equal(t, uint64(2), report.Connections)
+			assert.Equal(t, uint64(2000), report.Rate)
+			assert.Equal(t, uint64(2048), report.Size)
+		} else {
+			t.Errorf("unexpected report ID: %v", report.ID)
 		}
-		rs.s[id] = r
-	}
-	r.All = append(r.All, DataPoint{Duration: l, BlockTime: bt, Hash: hash})
-	if l > r.Max {
-		r.Max = l
-	}
-	if l < r.Min {
-		r.Min = l
-	}
-	if int64(l) < 0 {
-		r.NegativeCount++
-	}
-	// Using an int64 here makes an assumption about the scale and quantity of the data we are processing.
-	// If all latencies were 2 seconds, we would need around 4 billion records to overflow this.
-	// We are therefore assuming that the data does not exceed these bounds.
-	r.sum += int64(l)
-	rs.s[id] = r
-}
-
-func (rs *Reports) calculateAll() {
-	rs.l = make([]Report, 0, len(rs.s))
-	for _, r := range rs.s {
-		if len(r.All) == 0 {
-			r.Min = 0
-			rs.l = append(rs.l, r)
-			continue
-		}
-		r.Avg = time.Duration(r.sum / int64(len(r.All)))
-		r.StdDev = time.Duration(int64(stat.StdDev(toFloat(r.All), nil)))
-		rs.l = append(rs.l, r)
 	}
 }
 
-func (rs *Reports) addError() {
-	rs.errorCount++
+func TestReportErrorHandling(t *testing.T) {
+	store := NewMockBlockStore(1, 3)
+	
+	// Create an invalid transaction
+	invalidTx := types.Tx("invalid payload data")
+	
+	block1 := &types.Block{
+		Header: types.Header{
+			Height: 1,
+			Time:   time.Now(),
+		},
+		Data: types.Data{
+			Txs: []types.Tx{invalidTx},
+		},
+	}
+	block2 := &types.Block{
+		Header: types.Header{
+			Height: 2,
+			Time:   time.Now().Add(time.Second),
+		},
+	}
+
+	store.AddBlock(1, block1)
+	store.AddBlock(2, block2)
+
+	reports, err := GenerateFromBlockStore(store)
+	require.NoError(t, err)
+	assert.Equal(t, 1, reports.ErrorCount())
+	assert.Empty(t, reports.List())
 }
 
-// GenerateFromBlockStore creates a Report using the data in the provided
-// BlockStore.
-func GenerateFromBlockStore(s BlockStore) (*Reports, error) {
-	type payloadData struct {
-		id                      uuid.UUID
-		l                       time.Duration
-		bt                      time.Time
-		hash                    []byte
-		connections, rate, size uint64
-		err                     error
+func TestToFloat(t *testing.T) {
+	dataPoints := []DataPoint{
+		{Duration: 100 * time.Millisecond},
+		{Duration: 200 * time.Millisecond},
+		{Duration: -50 * time.Millisecond},
 	}
-	type txData struct {
-		tx types.Tx
-		bt time.Time
-	}
+
+	result := toFloat(dataPoints)
+	require.Len(t, result, len(dataPoints))
+	assert.Equal(t, float64(100*time.Millisecond), result[0])
+	assert.Equal(t, float64(200*time.Millisecond), result[1])
+	assert.Equal(t, float64(-50*time.Millisecond), result[2])
+}
+
+func TestEmptyReportHandling(t *testing.T) {
 	reports := &Reports{
 		s: make(map[uuid.UUID]Report),
 	}
-
-	// Deserializing to proto can be slow but does not depend on other data
-	// and can therefore be done in parallel.
-	// Deserializing in parallel does mean that the resulting data is
-	// not guaranteed to be delivered in the same order it was given to the
-	// worker pool.
-	const poolSize = 16
-
-	txc := make(chan txData)
-	pdc := make(chan payloadData, poolSize)
-
-	wg := &sync.WaitGroup{}
-	wg.Add(poolSize)
-	for i := 0; i < poolSize; i++ {
-		go func() {
-			defer wg.Done()
-			for b := range txc {
-				p, err := payload.FromBytes(b.tx)
-				if err != nil {
-					pdc <- payloadData{err: err}
-					continue
-				}
-
-				l := b.bt.Sub(p.Time.AsTime())
-				idb := (*[16]byte)(p.Id)
-				pdc <- payloadData{
-					l:           l,
-					bt:          b.bt,
-					hash:        b.tx.Hash(),
-					id:          uuid.UUID(*idb),
-					connections: p.Connections,
-					rate:        p.Rate,
-					size:        p.Size,
-				}
-			}
-		}()
+	id := uuid.Must(uuid.NewV4())
+	
+	// Add empty report
+	reports.s[id] = Report{
+		ID:          id,
+		Connections: 1,
+		Rate:        1000,
+		Size:        1024,
 	}
-	go func() {
-		wg.Wait()
-		close(pdc)
-	}()
 
-	go func() {
-		base, height := s.Base(), s.Height()
-		prev := s.LoadBlock(base)
-		for i := base + 1; i < height; i++ {
-			// Data from two adjacent block are used here simultaneously,
-			// blocks of height H and H+1. The transactions of the block of
-			// height H are used with the timestamp from the block of height
-			// H+1. This is done because the timestamp from H+1 is calculated
-			// by using the precommits submitted at height H. The timestamp in
-			// block H+1 represents the time at which block H was committed.
-			//
-			// In the (very unlikely) event that the very last block of the
-			// chain contains payload transactions, those transactions will not
-			// be used in the latency calculations because the last block whose
-			// transactions are used is the block one before the last.
-			cur := s.LoadBlock(i)
-			for _, tx := range prev.Data.Txs {
-				txc <- txData{tx: tx, bt: cur.Time}
-			}
-			prev = cur
-		}
-		close(txc)
-	}()
-	for pd := range pdc {
-		if pd.err != nil {
-			reports.addError()
-			continue
-		}
-		reports.addDataPoint(pd.id, pd.l, pd.bt, pd.hash, pd.connections, pd.rate, pd.size)
-	}
 	reports.calculateAll()
-	return reports, nil
-}
-
-func toFloat(in []DataPoint) []float64 {
-	r := make([]float64, len(in))
-	for i, v := range in {
-		r[i] = float64(int64(v.Duration))
-	}
-	return r
+	require.Len(t, reports.List(), 1)
+	
+	report := reports.List()[0]
+	assert.Equal(t, time.Duration(0), report.Min)
+	assert.Equal(t, time.Duration(0), report.Max)
+	assert.Equal(t, time.Duration(0), report.Avg)
+	assert.Equal(t, time.Duration(0), report.StdDev)
 }
