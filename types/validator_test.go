@@ -1,99 +1,129 @@
 package types
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+type validatorTestCase struct {
+	description string
+	validator   *Validator
+	expectPass  bool
+	errMsg      string
+}
+
 func TestValidatorProtoBuf(t *testing.T) {
-	val, _ := RandValidator(true, 100)
-	testCases := []struct {
-		msg      string
-		v1       *Validator
-		expPass1 bool
-		expPass2 bool
+	validator, err := RandValidator(true, 100)
+	require.NoError(t, err)
+
+	tests := []struct {
+		description     string
+		validator      *Validator
+		expectProto    bool
+		expectFromProto bool
 	}{
-		{"success validator", val, true, true},
-		{"failure empty", &Validator{}, false, false},
-		{"failure nil", nil, false, false},
+		{
+			description:     "valid validator",
+			validator:      validator,
+			expectProto:    true,
+			expectFromProto: true,
+		},
+		{
+			description:     "empty validator",
+			validator:      &Validator{},
+			expectProto:    false,
+			expectFromProto: false,
+		},
+		{
+			description:     "nil validator",
+			validator:      nil,
+			expectProto:    false,
+			expectFromProto: false,
+		},
 	}
-	for _, tc := range testCases {
-		protoVal, err := tc.v1.ToProto()
 
-		if tc.expPass1 {
-			require.NoError(t, err, tc.msg)
-		} else {
-			require.Error(t, err, tc.msg)
-		}
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			protoVal, err := tc.validator.ToProto()
+			if tc.expectProto {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				return
+			}
 
-		val, err := ValidatorFromProto(protoVal)
-		if tc.expPass2 {
-			require.NoError(t, err, tc.msg)
-			require.Equal(t, tc.v1, val, tc.msg)
-		} else {
-			require.Error(t, err, tc.msg)
-		}
+			val, err := ValidatorFromProto(protoVal)
+			if tc.expectFromProto {
+				require.NoError(t, err)
+				require.Equal(t, tc.validator, val)
+			} else {
+				require.Error(t, err)
+			}
+		})
 	}
 }
 
 func TestValidatorValidateBasic(t *testing.T) {
 	priv := NewMockPV()
-	pubKey, _ := priv.GetPubKey()
-	testCases := []struct {
-		val *Validator
-		err bool
-		msg string
-	}{
+	pubKey, err := priv.GetPubKey()
+	require.NoError(t, err)
+
+	tests := []validatorTestCase{
 		{
-			val: NewValidator(pubKey, 1),
-			err: false,
-			msg: "",
+			description: "valid validator",
+			validator:   NewValidator(pubKey, 1),
+			expectPass: true,
 		},
 		{
-			val: nil,
-			err: true,
-			msg: "nil validator",
+			description: "nil validator",
+			validator:   nil,
+			expectPass: false,
+			errMsg:     "nil validator",
 		},
 		{
-			val: &Validator{
-				PubKey: nil,
-			},
-			err: true,
-			msg: "validator does not have a public key",
+			description: "missing public key",
+			validator:   &Validator{PubKey: nil},
+			expectPass: false,
+			errMsg:     "validator does not have a public key",
 		},
 		{
-			val: NewValidator(pubKey, -1),
-			err: true,
-			msg: "validator has negative voting power",
+			description: "negative voting power",
+			validator:   NewValidator(pubKey, -1),
+			expectPass: false,
+			errMsg:     "validator has negative voting power",
 		},
 		{
-			val: &Validator{
+			description: "missing address",
+			validator: &Validator{
 				PubKey:  pubKey,
 				Address: nil,
 			},
-			err: true,
-			msg: "validator address is the wrong size: ",
+			expectPass: false,
+			errMsg:     "validator address is the wrong size: ",
 		},
 		{
-			val: &Validator{
+			description: "invalid address size",
+			validator: &Validator{
 				PubKey:  pubKey,
 				Address: []byte{'a'},
 			},
-			err: true,
-			msg: "validator address is the wrong size: 61",
+			expectPass: false,
+			errMsg:     "validator address is the wrong size: 61",
 		},
 	}
 
-	for _, tc := range testCases {
-		err := tc.val.ValidateBasic()
-		if tc.err {
-			if assert.Error(t, err) {
-				assert.Equal(t, tc.msg, err.Error())
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			err := tc.validator.ValidateBasic()
+			if tc.expectPass {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+				assert.Equal(t, tc.errMsg, err.Error())
 			}
-		} else {
-			assert.NoError(t, err)
-		}
+		})
 	}
 }
