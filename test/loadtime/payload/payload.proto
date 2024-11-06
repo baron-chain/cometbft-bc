@@ -1,18 +1,94 @@
 syntax = "proto3";
+
 package loadtime.payload;
 
 option go_package = "github.com/cometbft/cometbft/test/loadtime/payload";
 
 import "google/protobuf/timestamp.proto";
 
-// Payload is the structure of the loadtime transaction. Proto has a compact
-// encoded representation, making it ideal for the loadtime usecase which aims to
-// keep the generated transactions small.
+// Payload represents a transaction in the loadtime testing framework.
+// It is designed to be compact and efficient for load testing scenarios.
+//
+// Fields:
+// - connections: Number of concurrent connections for the test
+// - rate: Target transactions per second
+// - size: Desired transaction size in bytes
+// - time: Timestamp when the transaction was created
+// - id: Unique identifier for the test run
+// - padding: Additional bytes to reach desired transaction size
 message Payload {
-  uint64                    connections = 1;
-  uint64                    rate        = 2;
-  uint64                    size        = 3;
-  google.protobuf.Timestamp time        = 4;
-  bytes                     id          = 5;
-  bytes                     padding     = 6;
+  // Number of concurrent connections used in the test
+  // Must be > 0
+  uint64 connections = 1;
+
+  // Target rate of transactions per second
+  // Must be > 0
+  uint64 rate = 2;
+
+  // Desired size of the transaction in bytes
+  // Must be > 0 and <= 4MB (4194304 bytes)
+  uint64 size = 3;
+
+  // Timestamp when the transaction was created
+  // Required field
+  google.protobuf.Timestamp time = 4;
+
+  // Unique identifier for the test run
+  // Must be exactly 16 bytes (UUID)
+  bytes id = 5;
+
+  // Padding bytes to reach the desired transaction size
+  // Size is automatically calculated based on the 'size' field
+  bytes padding = 6;
+
+  reserved 7 to 15; // Reserved for future use
 }
+
+// Future considerations:
+// 1. Add validation rules for fields when protoc-gen-validate is supported
+// 2. Consider adding error codes and descriptions
+// 3. Consider adding test configuration metadata
+// 4. Consider adding test result fields
+// 5. Consider adding versioning information
+
+/*
+Example usage in Go:
+
+```go
+payload := &Payload{
+    Connections: 100,
+    Rate:       1000,
+    Size:       1024,
+    Time:       timestamppb.Now(),
+    Id:         uuid.New().Bytes(),
+}
+```
+
+Example validation rules (when protoc-gen-validate is supported):
+
+```protobuf
+uint64 connections = 1 [(validate.rules).uint64 = {
+    gt: 0,
+    lte: 1000
+}];
+
+uint64 rate = 2 [(validate.rules).uint64 = {
+    gt: 0,
+    lte: 100000
+}];
+
+uint64 size = 3 [(validate.rules).uint64 = {
+    gt: 0,
+    lte: 4194304
+}];
+
+google.protobuf.Timestamp time = 4 [(validate.rules).timestamp = {
+    required: true,
+    gt_now: false
+}];
+
+bytes id = 5 [(validate.rules).bytes = {
+    len: 16
+}];
+```
+*/
