@@ -6,98 +6,171 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
-	"strings"
-
 	dbm "github.com/cometbft/cometbft-db"
 	"github.com/cometbft/cometbft/store"
 	"github.com/cometbft/cometbft/test/loadtime/report"
 )
 
-var (
-	db     = flag.String("database-type", "goleveldb", "the type of database holding the blockstore")
-	dir    = flag.String("data-dir", "", "path to the directory containing the CometBFT databases")
-	csvOut = flag.String("csv", "", "dump the extracted latencies as raw csv for use in additional tooling")
-)
+type config struct {
+	dbType string
+	dataDir string
+	csvOutput string
+}
+
+func parseFlags() *config {
+	cfg := &config{}
+	flag.StringVar(&cfg.dbType, "database-type", "goleveldb", "Database type for blockstore")
+	flag.StringVar(&cfg.dataDir, "data-dir", "", "Path to CometBFT databases directory")
+	flag.StringVar(&cfg.csvOutput, "csv", "", "Path for CSV output of latencies")
+	flag.Parse()
+	
+	validateFlags(cfg)
+	return cfg
+}
+
+func validateFlags(cfg *config) {
+	if cfg.dbType == "" {
+		log.Fatal("database-type is required")
+	}
+	if cfg.dataDir == "" {
+		log.Fatal("data-dir is required")
+	}
+}
+
+func expandPath(path string) (string, error) {
+	if !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get user home directory: %w", err)
+	}
+	return filepath.Join(homeDir, strings.TrimPrefix(path, "~/")), nil
+}
+
+func initBlockstore(cfg *config) (*store.BlockStore, error) {
+	expandedPath, err := expandPath(cfg.dataDir)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := os.Stat(expandedPath); err != nil {
+		return nil, fmt.Errorf("invalid data directory: %w", err)
+	}
+
+	db, err := dbm.NewDB("blockstore", dbm.BackendType(cfg.dbType), expandedPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create database: %w", err)
+	}
+
+	return store.NewBlockStore(db), nil
+}
+
+func writeCSV(path string, reports []report.Report) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("failed to create CSV file: %w", err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	records := generateCSVRecords(reports)
+	return writer.WriteAll(records)
+}
+
+func generateCSVRecords(reports []report.Report) [][]string {
+	total := sumTotalRecords(reports)
+	records := make([][]string, total+1)
+	records[0] = []string{
+		"experiment_id",
+		"block_time",
+		"duration_ns",
+		"tx_hash",
+		"connections",
+		"rate",
+		"size",
+	}
+
+	offset := 1
+	for _, r := range reports {
+		offset += writeReportRecords(records[offset:], r)
+	}
+	return records
+}
+
+func sumTotalRecords(reports []report.Report) int {
+	total := 0
+	for _, r := range reports {
+		total += len(r.All)
+	}
+	return total
+}
+
+func writeReportRecords(records [][]string, r report.Report) int {
+	idStr := r.ID.String()
+	connStr := strconv.FormatInt(int64(r.Connections), 10)
+	rateStr := strconv.FormatInt(int64(r.Rate), 10)
+	sizeStr := strconv.FormatInt(int64(r.Size), 10)
+
+	for i, v := range r.All {
+		records[i] = []string{
+			idStr,
+			strconv.FormatInt(v.BlockTime.UnixNano(), 10),
+			strconv.FormatInt(int64(v.Duration), 10),
+			fmt.Sprintf("%X", v.Hash),
+			connStr,
+			rateStr,
+			sizeStr,
+		}
+	}
+	return len(r.All)
+}
+
+func printReportSummary(r report.Report) {
+	fmt.Printf(`Experiment ID: %s
+
+	Connections: %d
+	Rate: %d
+	Size: %d
+
+	Total Valid Tx: %d
+	Total Negative Latencies: %d
+	Minimum Latency: %s
+	Maximum Latency: %s
+	Average Latency: %s
+	Standard Deviation: %s
+
+`, r.ID, r.Connections, r.Rate, r.Size,
+		len(r.All), r.NegativeCount,
+		r.Min, r.Max, r.Avg, r.StdDev)
+}
 
 func main() {
-	flag.Parse()
-	if *db == "" {
-		log.Fatalf("must specify a database-type")
-	}
-	if *dir == "" {
-		log.Fatalf("must specify a data-dir")
-	}
-	d := strings.TrimPrefix(*dir, "~/")
-	if d != *dir {
-		h, err := os.UserHomeDir()
-		if err != nil {
-			panic(err)
-		}
-		d = h + "/" + d
-	}
-	_, err := os.Stat(d)
+	cfg := parseFlags()
+
+	blockstore, err := initBlockstore(cfg)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to initialize blockstore: %v", err)
 	}
-	dbType := dbm.BackendType(*db)
-	db, err := dbm.NewDB("blockstore", dbType, d)
+	defer blockstore.Close()
+
+	reports, err := report.GenerateFromBlockStore(blockstore)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to generate reports: %v", err)
 	}
-	s := store.NewBlockStore(db)
-	defer s.Close()
-	rs, err := report.GenerateFromBlockStore(s)
-	if err != nil {
-		panic(err)
-	}
-	if *csvOut != "" {
-		cf, err := os.Create(*csvOut)
-		if err != nil {
-			panic(err)
-		}
-		w := csv.NewWriter(cf)
-		err = w.WriteAll(toCSVRecords(rs.List()))
-		if err != nil {
-			panic(err)
+
+	if cfg.csvOutput != "" {
+		if err := writeCSV(cfg.csvOutput, reports.List()); err != nil {
+			log.Fatalf("Failed to write CSV: %v", err)
 		}
 		return
 	}
-	for _, r := range rs.List() {
-		fmt.Printf(""+
-			"Experiment ID: %s\n\n"+
-			"\tConnections: %d\n"+
-			"\tRate: %d\n"+
-			"\tSize: %d\n\n"+
-			"\tTotal Valid Tx: %d\n"+
-			"\tTotal Negative Latencies: %d\n"+
-			"\tMinimum Latency: %s\n"+
-			"\tMaximum Latency: %s\n"+
-			"\tAverage Latency: %s\n"+
-			"\tStandard Deviation: %s\n\n", r.ID, r.Connections, r.Rate, r.Size, len(r.All), r.NegativeCount, r.Min, r.Max, r.Avg, r.StdDev) //nolint: lll
 
+	for _, r := range reports.List() {
+		printReportSummary(r)
 	}
-	fmt.Printf("Total Invalid Tx: %d\n", rs.ErrorCount())
-}
-
-func toCSVRecords(rs []report.Report) [][]string {
-	total := 0
-	for _, v := range rs {
-		total += len(v.All)
-	}
-	res := make([][]string, total+1)
-
-	res[0] = []string{"experiment_id", "block_time", "duration_ns", "tx_hash", "connections", "rate", "size"}
-	offset := 1
-	for _, r := range rs {
-		idStr := r.ID.String()
-		connStr := strconv.FormatInt(int64(r.Connections), 10)
-		rateStr := strconv.FormatInt(int64(r.Rate), 10)
-		sizeStr := strconv.FormatInt(int64(r.Size), 10)
-		for i, v := range r.All {
-			res[offset+i] = []string{idStr, strconv.FormatInt(v.BlockTime.UnixNano(), 10), strconv.FormatInt(int64(v.Duration), 10), fmt.Sprintf("%X", v.Hash), connStr, rateStr, sizeStr}
-		}
-		offset += len(r.All)
-	}
-	return res
+	fmt.Printf("Total Invalid Tx: %d\n", reports.ErrorCount())
 }
