@@ -1,7 +1,9 @@
 package pex
 
 import (
+	"errors"
 	"net"
+	"sync"
 
 	"github.com/cometbft/cometbft/config"
 	"github.com/cometbft/cometbft/crypto/ed25519"
@@ -13,89 +15,143 @@ import (
 	"github.com/cosmos/gogoproto/proto"
 )
 
-var (
-	pexR *pex.Reactor
-	peer p2p.Peer
+const (
+	testListenAddr  = "0.0.0.0:98992"
+	testDialAddr    = "127.0.0.1"
+	testDialPort    = "123.123.123"
+	testPeerPort    = 98991
+	testAddrBookDir = "./testdata/addrbook1"
 )
 
-func init() {
-	addrB := pex.NewAddrBook("./testdata/addrbook1", false)
-	pexR := pex.NewReactor(addrB, &pex.ReactorConfig{SeedMode: false})
-	if pexR == nil {
-		panic("NewReactor returned nil")
-	}
-	pexR.SetLogger(log.NewNopLogger())
-	peer := newFuzzPeer()
-	pexR.AddPeer(peer)
+var (
+	errNilReactor = errors.New("pex reactor initialization failed")
+	errNilMessage = errors.New("failed to unmarshal message")
 
+	// Singleton instances protected by mutex
+	testState struct {
+		sync.Once
+		pexReactor *pex.Reactor
+		peer       p2p.Peer
+		err        error
+	}
+)
+
+// TestPeer implements a mock peer for testing
+type TestPeer struct {
+	*service.BaseService
+	store map[string]interface{}
 }
 
-func Fuzz(data []byte) int {
-	// MakeSwitch uses log.TestingLogger which can't be executed in init()
+// Ensure TestPeer implements p2p.Peer interface
+var _ p2p.Peer = (*TestPeer)(nil)
+
+// NewTestPeer creates a new test peer instance
+func NewTestPeer() *TestPeer {
+	peer := &TestPeer{
+		store: make(map[string]interface{}),
+	}
+	peer.BaseService = service.NewBaseService(nil, "TestPeer", peer)
+	return peer
+}
+
+// initializeTestState sets up the global test state
+func initializeTestState() error {
+	testState.Do(func() {
+		// Initialize address book and reactor
+		addrBook := pex.NewAddrBook(testAddrBookDir, false)
+		reactor := pex.NewReactor(addrBook, &pex.ReactorConfig{SeedMode: false})
+		if reactor == nil {
+			testState.err = errNilReactor
+			return
+		}
+
+		// Setup reactor
+		reactor.SetLogger(log.NewNopLogger())
+		testState.pexReactor = reactor
+
+		// Initialize and add peer
+		testState.peer = NewTestPeer()
+		reactor.AddPeer(testState.peer)
+	})
+
+	return testState.err
+}
+
+// getTestNodeInfo creates default node info for testing
+func getTestNodeInfo() p2p.DefaultNodeInfo {
+	privKey := ed25519.GenPrivKey()
+	nodeID := p2p.PubKeyToID(privKey.PubKey())
+
+	return p2p.DefaultNodeInfo{
+		ProtocolVersion: p2p.NewProtocolVersion(
+			version.P2PProtocol,
+			version.BlockProtocol,
+			0,
+		),
+		DefaultNodeID: nodeID,
+		ListenAddr:    testListenAddr,
+		Moniker:       "test-node",
+	}
+}
+
+// createTestSwitch creates a P2P switch for testing
+func createTestSwitch() *p2p.Switch {
 	cfg := config.DefaultP2PConfig()
 	cfg.PexReactor = true
-	sw := p2p.MakeSwitch(cfg, 0, "127.0.0.1", "123.123.123", func(i int, sw *p2p.Switch) *p2p.Switch {
-		return sw
-	})
-	pexR.SetSwitch(sw)
 
+	return p2p.MakeSwitch(
+		cfg,
+		0,
+		testDialAddr,
+		testDialPort,
+		func(i int, sw *p2p.Switch) *p2p.Switch { return sw },
+	)
+}
+
+// TestPeer implementation of p2p.Peer interface
+func (tp *TestPeer) FlushStop()                           {}
+func (tp *TestPeer) ID() p2p.ID                          { return getTestNodeInfo().DefaultNodeID }
+func (tp *TestPeer) RemoteIP() net.IP                    { return net.IPv4(0, 0, 0, 0) }
+func (tp *TestPeer) RemoteAddr() net.Addr                { return &net.TCPAddr{IP: tp.RemoteIP(), Port: testPeerPort} }
+func (tp *TestPeer) IsOutbound() bool                    { return false }
+func (tp *TestPeer) IsPersistent() bool                  { return false }
+func (tp *TestPeer) CloseConn() error                    { return nil }
+func (tp *TestPeer) NodeInfo() p2p.NodeInfo              { return getTestNodeInfo() }
+func (tp *TestPeer) Status() p2p.ConnectionStatus        { return p2p.ConnectionStatus{} }
+func (tp *TestPeer) SocketAddr() *p2p.NetAddress         { return p2p.NewNetAddress(tp.ID(), tp.RemoteAddr()) }
+func (tp *TestPeer) SendEnvelope(e p2p.Envelope) bool    { return true }
+func (tp *TestPeer) TrySendEnvelope(e p2p.Envelope) bool { return true }
+func (tp *TestPeer) Send(_ byte, _ []byte) bool          { return true }
+func (tp *TestPeer) TrySend(_ byte, _ []byte) bool       { return true }
+func (tp *TestPeer) Set(key string, value interface{})   { tp.store[key] = value }
+func (tp *TestPeer) Get(key string) interface{}          { return tp.store[key] }
+func (tp *TestPeer) GetRemovalFailed() bool              { return false }
+func (tp *TestPeer) SetRemovalFailed()                   {}
+
+// Fuzz implements the fuzzing entry point
+func Fuzz(data []byte) int {
+	// Initialize test state if needed
+	if err := initializeTestState(); err != nil {
+		return -1
+	}
+
+	// Create and set up switch
+	sw := createTestSwitch()
+	testState.pexReactor.SetSwitch(sw)
+
+	// Unmarshal and process the message
 	var msg proto.Message
-	err := proto.Unmarshal(data, msg)
-	if err != nil {
+	if err := proto.Unmarshal(data, msg); err != nil {
+		// Return 0 for expected unmarshaling errors
 		return 0
 	}
-	pexR.ReceiveEnvelope(p2p.Envelope{
+
+	// Send message to reactor
+	testState.pexReactor.ReceiveEnvelope(p2p.Envelope{
 		ChannelID: pex.PexChannel,
-		Src:       peer,
+		Src:       testState.peer,
 		Message:   msg,
 	})
 
 	return 1
 }
-
-type fuzzPeer struct {
-	*service.BaseService
-	m map[string]interface{}
-}
-
-var _ p2p.Peer = (*fuzzPeer)(nil)
-
-func newFuzzPeer() *fuzzPeer {
-	fp := &fuzzPeer{m: make(map[string]interface{})}
-	fp.BaseService = service.NewBaseService(nil, "fuzzPeer", fp)
-	return fp
-}
-
-var privKey = ed25519.GenPrivKey()
-var nodeID = p2p.PubKeyToID(privKey.PubKey())
-var defaultNodeInfo = p2p.DefaultNodeInfo{
-	ProtocolVersion: p2p.NewProtocolVersion(
-		version.P2PProtocol,
-		version.BlockProtocol,
-		0,
-	),
-	DefaultNodeID: nodeID,
-	ListenAddr:    "0.0.0.0:98992",
-	Moniker:       "foo1",
-}
-
-func (fp *fuzzPeer) FlushStop()       {}
-func (fp *fuzzPeer) ID() p2p.ID       { return nodeID }
-func (fp *fuzzPeer) RemoteIP() net.IP { return net.IPv4(0, 0, 0, 0) }
-func (fp *fuzzPeer) RemoteAddr() net.Addr {
-	return &net.TCPAddr{IP: fp.RemoteIP(), Port: 98991, Zone: ""}
-}
-func (fp *fuzzPeer) IsOutbound() bool                    { return false }
-func (fp *fuzzPeer) IsPersistent() bool                  { return false }
-func (fp *fuzzPeer) CloseConn() error                    { return nil }
-func (fp *fuzzPeer) NodeInfo() p2p.NodeInfo              { return defaultNodeInfo }
-func (fp *fuzzPeer) Status() p2p.ConnectionStatus        { var cs p2p.ConnectionStatus; return cs }
-func (fp *fuzzPeer) SocketAddr() *p2p.NetAddress         { return p2p.NewNetAddress(fp.ID(), fp.RemoteAddr()) }
-func (fp *fuzzPeer) SendEnvelope(e p2p.Envelope) bool    { return true }
-func (fp *fuzzPeer) TrySendEnvelope(e p2p.Envelope) bool { return true }
-func (fp *fuzzPeer) Send(_ byte, _ []byte) bool          { return true }
-func (fp *fuzzPeer) TrySend(_ byte, _ []byte) bool       { return true }
-func (fp *fuzzPeer) Set(key string, value interface{})   { fp.m[key] = value }
-func (fp *fuzzPeer) Get(key string) interface{}          { return fp.m[key] }
-func (fp *fuzzPeer) GetRemovalFailed() bool              { return false }
-func (fp *fuzzPeer) SetRemovalFailed()                   {}
