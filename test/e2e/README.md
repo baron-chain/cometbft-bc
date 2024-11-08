@@ -1,4 +1,4 @@
-# End-to-End Tests
+# BC End-to-End Tests
 
 Spins up and tests CometBFT networks in Docker Compose based on a testnet manifest. To run the CI testnet:
 
