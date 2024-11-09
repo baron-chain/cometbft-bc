@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Testnet Runner Script
+# Testnet BC Runner Script
 # Runs multiple testnet manifests sequentially and handles failures gracefully.
 # Usage: ./run_testnets.sh [OPTIONS] MANIFEST...
 
