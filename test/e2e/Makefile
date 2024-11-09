@@ -1,4 +1,4 @@
-# Build configuration
+# Build configuration BCS
 DOCKER_TAG := cometbft/e2e-node:local-version
 BUILD_DIR := build
 DB_TAGS := badgerdb,boltdb,cleveldb,rocksdb
