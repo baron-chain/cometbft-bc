@@ -1,5 +1,99 @@
-snapshot_interval = 100
-persist_interval = 1
+# Application Configuration
+# Last updated: 2024-11-10
+
+#----------------------------------------
+# Core Settings
+#----------------------------------------
 chain_id = "test-chain"
-protocol = "socket"
+protocol = "socket"  # Options: socket, builtin
+environment = "development"  # Options: development, test, production
+
+#----------------------------------------
+# Network Settings
+#----------------------------------------
+[network]
 listen = "tcp://127.0.0.1:26658"
+max_connections = 100
+read_timeout = 5  # seconds
+write_timeout = 5  # seconds
+keep_alive = true
+
+#----------------------------------------
+# State Management
+#----------------------------------------
+[state]
+# Snapshot configuration
+snapshot_interval = 100  # Blocks between snapshots
+snapshot_retention = 5   # Number of snapshots to retain
+snapshot_compression = true
+
+# Persistence configuration
+persist_interval = 1  # Blocks between state persistence
+persist_mode = "full"  # Options: full, pruned
+
+#----------------------------------------
+# Database
+#----------------------------------------
+[database]
+engine = "goleveldb"  # Options: goleveldb, badgerdb, rocksdb
+path = "data/app.db"
+cache_size = "100MB"
+
+#----------------------------------------
+# Logging
+#----------------------------------------
+[log]
+level = "info"    # Options: debug, info, warn, error
+format = "json"   # Options: json, text
+file = "logs/app.log"
+
+#----------------------------------------
+# Metrics
+#----------------------------------------
+[metrics]
+enabled = true
+prometheus = true
+prometheus_listen = "127.0.0.1:26660"
+collection_interval = 10  # seconds
+
+#----------------------------------------
+# Security
+#----------------------------------------
+[security]
+max_body_size = "1MB"
+tls_enabled = false
+# TLS configuration (if enabled)
+#tls_cert_file = "config/cert.pem"
+#tls_key_file = "config/key.pem"
+
+#----------------------------------------
+# Performance
+#----------------------------------------
+[performance]
+max_goroutines = 1000
+max_memory = "2GB"
+gc_interval = 600  # seconds
+
+#----------------------------------------
+# Development
+#----------------------------------------
+[dev]
+debug = false
+profile = false
+trace = false
+
+#----------------------------------------
+# Advanced Settings
+#----------------------------------------
+[advanced]
+# Retry configuration
+max_retries = 3
+retry_delay = 1000  # milliseconds
+
+# Buffer sizes
+read_buffer = "64KB"
+write_buffer = "64KB"
+
+# Timeouts
+shutdown_timeout = 30  # seconds
+startup_timeout = 30   # seconds
