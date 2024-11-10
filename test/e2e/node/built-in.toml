@@ -1,4 +1,89 @@
-snapshot_interval = 100
-persist_interval = 1
-chain_id = "test-chain"
-protocol = "builtin"
+# Chain Configuration
+# Last updated: 2024-11-10
+
+# Core Chain Settings
+chain:
+  id: "test-chain"
+  network: testnet  # Options: mainnet, testnet, devnet
+  protocol_version: v1
+  protocol: builtin  # Options: builtin, external, remote
+
+# State Management
+state:
+  snapshot:
+    interval: 100  # Blocks between snapshots
+    retention: 10  # Number of snapshots to keep
+    compression: true
+  persist:
+    interval: 1  # Blocks between state persistence
+    mode: full  # Options: full, pruned, archive
+    path: data/chain
+
+# Consensus Settings
+consensus:
+  algorithm: tendermint
+  block_time: 5000  # ms
+  timeouts:
+    commit: 1000  # ms
+    propose: 3000  # ms
+
+# Performance Tuning
+performance:
+  max_txs_per_block: 10000
+  max_block_size: 2MB
+  mempool:
+    size: 5000
+    cache: 100MB
+
+# Network Settings
+network:
+  listen_addr: tcp://0.0.0.0:26656
+  rpc_addr: tcp://0.0.0.0:26657
+  grpc_addr: 0.0.0.0:9090
+  max_connections: 50
+  connection_timeout: 5  # seconds
+
+# API Configuration
+api:
+  enable: true
+  address: 0.0.0.0:1317
+  swagger: true
+  cors_allowed_origins: ["*"]
+  max_open_connections: 1000
+
+# Metrics & Monitoring
+metrics:
+  enable: true
+  prometheus: true
+  prometheus_addr: 0.0.0.0:26660
+  interval: 10  # seconds
+
+# Logging Configuration
+log:
+  level: info  # Options: debug, info, warn, error
+  format: json  # Options: json, text
+  output: stdout  # Options: stdout, file
+  file_path: logs/chain.log
+
+# Development Settings
+dev:
+  debug: false
+  profiler: false
+  trace: false
+
+# Security Settings
+security:
+  minimum_gas_prices: 0.001stake
+  max_body_bytes: 1MB
+  max_header_bytes: 1MB
+  timeouts:
+    read: 5
+    write: 10
+    idle: 15  # seconds
+
+# Feature Flags
+features:
+  experimental: false
+  state_sync: true
+  fast_sync: true
+  dynamic_upgrades: false
