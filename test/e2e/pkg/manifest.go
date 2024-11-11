@@ -1,5 +1,6 @@
+//BC GEN TEST - #1023811F
 package e2e
-// BC replace TBD
+
 import (
 	"fmt"
 	"os"
