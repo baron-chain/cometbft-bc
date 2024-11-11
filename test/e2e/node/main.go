@@ -1,3 +1,4 @@
+//BC GEN TEST - #1023811F
 package main
 //bc ad
 import (
