@@ -1,19 +1,16 @@
 package main
-// BC replace TBD
+
 import (
 	"os"
-
-	e2e "github.com/cometbft/cometbft/test/e2e/pkg"
+	e2e "github.com/baron-chain/cometbft-bc/test/e2e/pkg"
 )
 
-// Test runs test cases under tests/
 func Test(testnet *e2e.Testnet) error {
 	logger.Info("Running tests in ./tests/...")
-
-	err := os.Setenv("E2E_MANIFEST", testnet.File)
-	if err != nil {
+	
+	if err := os.Setenv("E2E_MANIFEST", testnet.File); err != nil {
 		return err
 	}
-
-	return execVerbose("go", "test", "-count", "1", "./tests/...")
-}
+	
+	testArgs := []string{"test", "-count", "1", "./tests/..."}
+	return execVerbose("go", testArgs...)
