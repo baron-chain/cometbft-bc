@@ -1,4 +1,3 @@
-//BC GEN TEST - #1023811F
 package main
 
 import (
@@ -6,80 +5,145 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
-	"github.com/cometbft/cometbft/libs/log"
-	e2e "github.com/cometbft/cometbft/test/e2e/pkg"
+	"github.com/baron-chain/cometbft-bc/libs/log"
+	e2e "github.com/baron-chain/cometbft-bc/test/e2e/pkg"
 )
 
-// Cleanup removes the Docker Compose containers and testnet directory.
+const (
+	e2eLabel          = "e2e=True"
+	e2eNodeImage      = "cometbft/e2e-node"
+	networkMountPath  = "/network"
+)
+
+var (
+	ErrNoDirectory = errors.New("no directory set")
+)
+
+// Cleaner handles cleanup operations for the testnet
+type Cleaner struct {
+	testnet *e2e.Testnet
+	dockerExecutor *DockerExecutor
+}
+
+// NewCleaner creates a new Cleaner instance
+func NewCleaner(testnet *e2e.Testnet) *Cleaner {
+	return &Cleaner{
+		testnet: testnet,
+		dockerExecutor: NewDockerExecutor("", false),
+	}
+}
+
+// Cleanup orchestrates the cleanup of both Docker resources and the testnet directory
 func Cleanup(testnet *e2e.Testnet) error {
-	err := cleanupDocker()
-	if err != nil {
-		return err
+	cleaner := NewCleaner(testnet)
+	return cleaner.Cleanup()
+}
+
+func (c *Cleaner) Cleanup() error {
+	if err := c.cleanupDocker(); err != nil {
+		return fmt.Errorf("failed to cleanup Docker resources: %w", err)
 	}
-	err = cleanupDir(testnet.Dir)
-	if err != nil {
-		return err
+
+	if err := c.cleanupDirectory(); err != nil {
+		return fmt.Errorf("failed to cleanup directory: %w", err)
 	}
+
 	return nil
 }
 
-// cleanupDocker removes all E2E resources (with label e2e=True), regardless
-// of testnet.
-func cleanupDocker() error {
+// cleanupDocker removes all E2E Docker resources
+func (c *Cleaner) cleanupDocker() error {
 	logger.Info("Removing Docker containers and networks")
 
-	// GNU xargs requires the -r flag to not run when input is empty, macOS
-	// does this by default. Ugly, but works.
-	xargsR := `$(if [[ $OSTYPE == "linux-gnu"* ]]; then echo -n "-r"; fi)`
-
-	err := exec("bash", "-c", fmt.Sprintf(
-		"docker container ls -qa --filter label=e2e | xargs %v docker container rm -f", xargsR))
-	if err != nil {
-		return err
+	xargsFlag := c.getXargsFlag()
+	
+	if err := c.removeDockerContainers(xargsFlag); err != nil {
+		return fmt.Errorf("failed to remove containers: %w", err)
 	}
 
-	err = exec("bash", "-c", fmt.Sprintf(
-		"docker network ls -q --filter label=e2e | xargs %v docker network rm", xargsR))
-	if err != nil {
-		return err
+	if err := c.removeDockerNetworks(xargsFlag); err != nil {
+		return fmt.Errorf("failed to remove networks: %w", err)
 	}
 
 	return nil
 }
 
-// cleanupDir cleans up a testnet directory
-func cleanupDir(dir string) error {
-	if dir == "" {
-		return errors.New("no directory set")
+func (c *Cleaner) getXargsFlag() string {
+	if runtime.GOOS == "linux" {
+		return "-r"
+	}
+	return ""
+}
+
+func (c *Cleaner) removeDockerContainers(xargsFlag string) error {
+	cmd := fmt.Sprintf(
+		"docker container ls -qa --filter label=%s | xargs %s docker container rm -f",
+		e2eLabel, xargsFlag,
+	)
+	return exec("bash", "-c", cmd)
+}
+
+func (c *Cleaner) removeDockerNetworks(xargsFlag string) error {
+	cmd := fmt.Sprintf(
+		"docker network ls -q --filter label=%s | xargs %s docker network rm",
+		e2eLabel, xargsFlag,
+	)
+	return exec("bash", "-c", cmd)
+}
+
+// cleanupDirectory handles the cleanup of the testnet directory
+func (c *Cleaner) cleanupDirectory() error {
+	if c.testnet.Dir == "" {
+		return ErrNoDirectory
 	}
 
-	_, err := os.Stat(dir)
-	if os.IsNotExist(err) {
-		return nil
-	} else if err != nil {
+	if err := c.validateDirectory(); err != nil {
 		return err
 	}
 
-	logger.Info("cleanup dir", "msg", log.NewLazySprintf("Removing testnet directory %q", dir))
+	logger.Info("cleanup dir", "msg", log.NewLazySprintf("Removing testnet directory %q", c.testnet.Dir))
 
-	// On Linux, some local files in the volume will be owned by root since CometBFT
-	// runs as root inside the container, so we need to clean them up from within a
-	// container running as root too.
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	err = execDocker("run", "--rm", "--entrypoint", "", "-v", fmt.Sprintf("%v:/network", absDir),
-		"cometbft/e2e-node", "sh", "-c", "rm -rf /network/*/")
-	if err != nil {
-		return err
+	if err := c.cleanupDirectoryContents(); err != nil {
+		return fmt.Errorf("failed to cleanup directory contents: %w", err)
 	}
 
-	err = os.RemoveAll(dir)
-	if err != nil {
-		return err
+	if err := os.RemoveAll(c.testnet.Dir); err != nil {
+		return fmt.Errorf("failed to remove directory: %w", err)
 	}
 
 	return nil
+}
+
+func (c *Cleaner) validateDirectory() error {
+	_, err := os.Stat(c.testnet.Dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to check directory: %w", err)
+	}
+	return nil
+}
+
+func (c *Cleaner) cleanupDirectoryContents() error {
+	absDir, err := filepath.Abs(c.testnet.Dir)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+
+	// On Linux, clean up files owned by root from within a container
+	return c.dockerExecutor.DockerCmd(
+		"run",
+		"--rm",
+		"--entrypoint",
+		"",
+		"-v",
+		fmt.Sprintf("%v:%v", absDir, networkMountPath),
+		e2eNodeImage,
+		"sh",
+		"-c",
+		fmt.Sprintf("rm -rf %v/*/", networkMountPath),
+	)
 }
