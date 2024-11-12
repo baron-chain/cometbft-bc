@@ -1,14 +1,12 @@
 package main
-// BC replace TBD
+
 import (
 	"time"
-
-	"github.com/cometbft/cometbft/libs/log"
-	e2e "github.com/cometbft/cometbft/test/e2e/pkg"
+	
+	"github.com/baron-chain/cometbft-bc/libs/log"
+	e2e "github.com/baron-chain/cometbft-bc/test/e2e/pkg"
 )
 
-// Wait waits for a number of blocks to be produced, and for all nodes to catch
-// up with it.
 func Wait(testnet *e2e.Testnet, blocks int64) error {
 	block, _, err := waitForHeight(testnet, 0)
 	if err != nil {
@@ -17,18 +15,14 @@ func Wait(testnet *e2e.Testnet, blocks int64) error {
 	return WaitUntil(testnet, block.Height+blocks)
 }
 
-// WaitUntil waits until a given height has been reached.
 func WaitUntil(testnet *e2e.Testnet, height int64) error {
 	logger.Info("wait until", "msg", log.NewLazySprintf("Waiting for all nodes to reach height %v...", height))
-	_, err := waitForAllNodes(testnet, height, waitingTime(len(testnet.Nodes), height))
-	if err != nil {
-		return err
-	}
-	return nil
+	_, err := waitForAllNodes(testnet, height, calculateWaitingTime(len(testnet.Nodes), height))
+	return err
 }
 
-// waitingTime estimates how long it should take for a node to reach the height.
-// More nodes in a network implies we may expect a slower network and may have to wait longer.
-func waitingTime(nodes int, height int64) time.Duration {
-	return time.Duration(20+(int64(nodes)*height)) * time.Second
+func calculateWaitingTime(nodes int, height int64) time.Duration {
+	baseWaitTime := int64(20)
+	waitTimePerNode := baseWaitTime + (int64(nodes) * height)
+	return time.Duration(waitTimePerNode) * time.Second
 }
