@@ -1,5 +1,5 @@
 package main
-// BC replace TBD
+
 import (
 	"context"
 	"errors"
@@ -7,143 +7,196 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cometbft/cometbft/libs/log"
-	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
-	e2e "github.com/cometbft/cometbft/test/e2e/pkg"
-	"github.com/cometbft/cometbft/test/loadtime/payload"
-	"github.com/cometbft/cometbft/types"
+	"github.com/baron-chain/cometbft-bc/libs/log"
+	rpchttp "github.com/baron-chain/cometbft-bc/rpc/client/http"
+	e2e "github.com/baron-chain/cometbft-bc/test/e2e/pkg"
+	"github.com/baron-chain/cometbft-bc/test/loadtime/payload"
+	"github.com/baron-chain/cometbft-bc/types"
 	"github.com/google/uuid"
 )
 
-const workerPoolSize = 16
+const (
+	workerPoolSize     = 16
+	initialTimeout     = 1 * time.Minute
+	stallTimeout       = 30 * time.Second
+	batchTimeout       = 1 * time.Second
+)
 
-// Load generates transactions against the network until the given context is
-// canceled.
+var (
+	ErrNoTransactions = errors.New("failed to submit any transactions")
+	ErrStallTimeout   = errors.New("unable to submit transactions due to stall")
+)
+
+type LoadTester struct {
+	testnet    *e2e.Testnet
+	runID      []byte
+	txChan     chan types.Tx
+	successChan chan struct{}
+	startTime  time.Time
+}
+
+func NewLoadTester(testnet *e2e.Testnet) *LoadTester {
+	return &LoadTester{
+		testnet:     testnet,
+		runID:       [16]byte(uuid.New())[:],
+		txChan:      make(chan types.Tx),
+		successChan: make(chan struct{}),
+	}
+}
+
 func Load(ctx context.Context, testnet *e2e.Testnet) error {
-	initialTimeout := 1 * time.Minute
-	stallTimeout := 30 * time.Second
-	chSuccess := make(chan struct{})
+	lt := NewLoadTester(testnet)
+	return lt.Run(ctx)
+}
+
+func (lt *LoadTester) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	lt.startTime = time.Now()
 	logger.Info("load", "msg", log.NewLazySprintf("Starting transaction load (%v workers)...", workerPoolSize))
-	started := time.Now()
-	u := [16]byte(uuid.New()) // generate run ID on startup
 
-	txCh := make(chan types.Tx)
-	go loadGenerate(ctx, txCh, testnet, u[:])
+	go lt.generateTransactions(ctx)
+	lt.startWorkers(ctx)
 
-	for _, n := range testnet.Nodes {
-		if n.SendNoLoad {
-			continue
+	return lt.monitorProgress(ctx)
+}
+
+func (lt *LoadTester) generateTransactions(ctx context.Context) {
+	defer close(lt.txChan)
+
+	ticker := time.NewTicker(batchTimeout)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			batchCtx, cancel := context.WithTimeout(ctx, batchTimeout)
+			lt.createTransactionBatch(batchCtx)
+			cancel()
+		case <-ctx.Done():
+			return
 		}
+	}
+}
 
-		for w := 0; w < testnet.LoadTxConnections; w++ {
-			go loadProcess(ctx, txCh, chSuccess, n)
+func (lt *LoadTester) createTransactionBatch(ctx context.Context) {
+	workerPool := make(chan struct{}, workerPoolSize)
+	var wg sync.WaitGroup
+
+	for i := 0; i < lt.testnet.LoadTxBatchSize; i++ {
+		select {
+		case workerPool <- struct{}{}:
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() { <-workerPool }()
+				
+				lt.generateSingleTransaction(ctx)
+			}()
+		case <-ctx.Done():
+			return
 		}
 	}
 
-	// Monitor successful transactions, and abort on stalls.
-	success := 0
-	timeout := initialTimeout
+	wg.Wait()
+}
+
+func (lt *LoadTester) generateSingleTransaction(ctx context.Context) {
+	tx, err := lt.createTransaction()
+	if err != nil {
+		logger.Error("failed to generate transaction", "error", err)
+		return
+	}
+
+	select {
+	case lt.txChan <- tx:
+	case <-ctx.Done():
+	}
+}
+
+func (lt *LoadTester) createTransaction() (types.Tx, error) {
+	return payload.NewBytes(&payload.Payload{
+		Id:          lt.runID,
+		Size:        uint64(lt.testnet.LoadTxSizeBytes),
+		Rate:        uint64(lt.testnet.LoadTxBatchSize),
+		Connections: uint64(lt.testnet.LoadTxConnections),
+	})
+}
+
+func (lt *LoadTester) startWorkers(ctx context.Context) {
+	for _, node := range lt.testnet.Nodes {
+		if node.SendNoLoad {
+			continue
+		}
+		
+		for w := 0; w < lt.testnet.LoadTxConnections; w++ {
+			go lt.processTransactions(ctx, node)
+		}
+	}
+}
+
+func (lt *LoadTester) processTransactions(ctx context.Context, node *e2e.Node) {
+	client, err := node.Client()
+	if err != nil {
+		logger.Info("failed to create node client", "error", err)
+		return
+	}
+
 	for {
 		select {
-		case <-chSuccess:
-			success++
-			timeout = stallTimeout
-		case <-time.After(timeout):
-			return fmt.Errorf("unable to submit transactions for %v", timeout)
-		case <-ctx.Done():
-			if success == 0 {
-				return errors.New("failed to submit any transactions")
+		case tx, ok := <-lt.txChan:
+			if !ok {
+				return
 			}
-			logger.Info("load", "msg", log.NewLazySprintf("Ending transaction load after %v txs (%.1f tx/s)...",
-				success, float64(success)/time.Since(started).Seconds()))
+			lt.sendTransaction(ctx, client, tx)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (lt *LoadTester) sendTransaction(ctx context.Context, client *rpchttp.HTTP, tx types.Tx) {
+	if _, err := client.BroadcastTxSync(ctx, tx); err != nil {
+		logger.Debug("failed to broadcast transaction", "error", err)
+		return
+	}
+	
+	select {
+	case lt.successChan <- struct{}{}:
+	case <-ctx.Done():
+	}
+}
+
+func (lt *LoadTester) monitorProgress(ctx context.Context) error {
+	successCount := 0
+	timeout := initialTimeout
+
+	for {
+		select {
+		case <-lt.successChan:
+			successCount++
+			timeout = stallTimeout
+
+		case <-time.After(timeout):
+			return fmt.Errorf("%w: %v", ErrStallTimeout, timeout)
+
+		case <-ctx.Done():
+			if successCount == 0 {
+				return ErrNoTransactions
+			}
+
+			lt.logFinalStats(successCount)
 			return nil
 		}
 	}
 }
 
-// loadGenerate generates jobs until the context is canceled
-func loadGenerate(ctx context.Context, txCh chan<- types.Tx, testnet *e2e.Testnet, id []byte) {
-	t := time.NewTimer(0)
-	defer t.Stop()
-	for {
-		select {
-		case <-t.C:
-		case <-ctx.Done():
-			close(txCh)
-			return
-		}
-		t.Reset(time.Second)
-
-		// A context with a timeout is created here to time the createTxBatch
-		// function out. If createTxBatch has not completed its work by the time
-		// the next batch is set to be sent out, then the context is canceled so that
-		// the current batch is halted, allowing the next batch to begin.
-		tctx, cf := context.WithTimeout(ctx, time.Second)
-		createTxBatch(tctx, txCh, testnet, id)
-		cf()
-	}
-}
-
-// createTxBatch creates new transactions and sends them into the txCh. createTxBatch
-// returns when either a full batch has been sent to the txCh or the context
-// is canceled.
-func createTxBatch(ctx context.Context, txCh chan<- types.Tx, testnet *e2e.Testnet, id []byte) {
-	wg := &sync.WaitGroup{}
-	genCh := make(chan struct{})
-	for i := 0; i < workerPoolSize; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range genCh {
-				tx, err := payload.NewBytes(&payload.Payload{
-					Id:          id,
-					Size:        uint64(testnet.LoadTxSizeBytes),
-					Rate:        uint64(testnet.LoadTxBatchSize),
-					Connections: uint64(testnet.LoadTxConnections),
-				})
-				if err != nil {
-					panic(fmt.Sprintf("Failed to generate tx: %v", err))
-				}
-
-				select {
-				case txCh <- tx:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
-	}
-	for i := 0; i < testnet.LoadTxBatchSize; i++ {
-		select {
-		case genCh <- struct{}{}:
-		case <-ctx.Done():
-			break
-		}
-	}
-	close(genCh)
-	wg.Wait()
-}
-
-// loadProcess processes transactions by sending transactions received on the txCh
-// to the client.
-func loadProcess(ctx context.Context, txCh <-chan types.Tx, chSuccess chan<- struct{}, n *e2e.Node) {
-	var client *rpchttp.HTTP
-	var err error
-	s := struct{}{}
-	for tx := range txCh {
-		if client == nil {
-			client, err = n.Client()
-			if err != nil {
-				logger.Info("non-fatal error creating node client", "error", err)
-				continue
-			}
-		}
-		if _, err = client.BroadcastTxSync(ctx, tx); err != nil {
-			continue
-		}
-		chSuccess <- s
-	}
+func (lt *LoadTester) logFinalStats(successCount int) {
+	duration := time.Since(lt.startTime).Seconds()
+	txPerSecond := float64(successCount) / duration
+	
+	logger.Info("load", "msg", log.NewLazySprintf(
+		"Ending transaction load after %v txs (%.1f tx/s)...",
+		successCount, txPerSecond))
 }
