@@ -1,5 +1,5 @@
 package main
-// BC replace TBD
+
 import (
 	"bytes"
 	"encoding/base64"
@@ -15,14 +15,14 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/cometbft/cometbft/config"
-	"github.com/cometbft/cometbft/crypto/ed25519"
-	"github.com/cometbft/cometbft/libs/log"
-	"github.com/cometbft/cometbft/p2p"
-	"github.com/cometbft/cometbft/privval"
-	e2e "github.com/cometbft/cometbft/test/e2e/pkg"
-	"github.com/cometbft/cometbft/test/e2e/pkg/infra"
-	"github.com/cometbft/cometbft/types"
+	"github.com/baron-chain/cometbft-bc/config"
+	"github.com/baron-chain/cometbft-bc/crypto/ed25519"
+	"github.com/baron-chain/cometbft-bc/libs/log"
+	"github.com/baron-chain/cometbft-bc/p2p"
+	"github.com/baron-chain/cometbft-bc/privval"
+	e2e "github.com/baron-chain/cometbft-bc/test/e2e/pkg"
+	"github.com/baron-chain/cometbft-bc/test/e2e/pkg/infra"
+	"github.com/baron-chain/cometbft-bc/types"
 )
 
 const (
@@ -35,13 +35,14 @@ const (
 	PrivvalStateFile      = "data/priv_validator_state.json"
 	PrivvalDummyKeyFile   = "config/dummy_validator_key.json"
 	PrivvalDummyStateFile = "data/dummy_validator_state.json"
+
+	StateSyncDiscoveryTime = 5 * time.Second
 )
 
-// Setup sets up the testnet configuration.
 func Setup(testnet *e2e.Testnet, infp infra.Provider) error {
 	logger.Info("setup", "msg", log.NewLazySprintf("Generating testnet files in %q", testnet.Dir))
 
-	if err := os.MkdirAll(testnet.Dir, os.ModePerm); err != nil {
+	if err := setupDirectories(testnet); err != nil {
 		return err
 	}
 
@@ -54,72 +55,102 @@ func Setup(testnet *e2e.Testnet, infp infra.Provider) error {
 		return err
 	}
 
+	return setupNodes(testnet, genesis)
+}
+
+func setupDirectories(testnet *e2e.Testnet) error {
+	return os.MkdirAll(testnet.Dir, os.ModePerm)
+}
+
+func setupNodes(testnet *e2e.Testnet, genesis types.GenesisDoc) error {
 	for _, node := range testnet.Nodes {
-		nodeDir := filepath.Join(testnet.Dir, node.Name)
+		if err := setupNode(node, genesis); err != nil {
+			return fmt.Errorf("failed to setup node %s: %w", node.Name, err)
+		}
+	}
+	return nil
+}
 
-		dirs := []string{
-			filepath.Join(nodeDir, "config"),
-			filepath.Join(nodeDir, "data"),
-			filepath.Join(nodeDir, "data", "app"),
-		}
-		for _, dir := range dirs {
-			// light clients don't need an app directory
-			if node.Mode == e2e.ModeLight && strings.Contains(dir, "app") {
-				continue
-			}
-			err := os.MkdirAll(dir, 0o755)
-			if err != nil {
-				return err
-			}
-		}
+func setupNode(node *e2e.Node, genesis types.GenesisDoc) error {
+	nodeDir := filepath.Join(node.Testnet.Dir, node.Name)
 
-		cfg, err := MakeConfig(node)
-		if err != nil {
-			return err
-		}
-		config.WriteConfigFile(filepath.Join(nodeDir, "config", "config.toml"), cfg) // panics
+	if err := createNodeDirectories(node, nodeDir); err != nil {
+		return err
+	}
 
-		appCfg, err := MakeAppConfig(node)
-		if err != nil {
-			return err
-		}
-		err = os.WriteFile(filepath.Join(nodeDir, "config", "app.toml"), appCfg, 0o644) //nolint:gosec
-		if err != nil {
-			return err
-		}
+	if err := createNodeConfigs(node, nodeDir); err != nil {
+		return err
+	}
 
-		if node.Mode == e2e.ModeLight {
-			// stop early if a light client
+	if node.Mode == e2e.ModeLight {
+		return nil
+	}
+
+	return createNodeFiles(node, nodeDir, genesis)
+}
+
+func createNodeDirectories(node *e2e.Node, nodeDir string) error {
+	dirs := []string{
+		filepath.Join(nodeDir, "config"),
+		filepath.Join(nodeDir, "data"),
+		filepath.Join(nodeDir, "data", "app"),
+	}
+
+	for _, dir := range dirs {
+		if node.Mode == e2e.ModeLight && strings.Contains(dir, "app") {
 			continue
 		}
-
-		err = genesis.SaveAs(filepath.Join(nodeDir, "config", "genesis.json"))
-		if err != nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
-
-		err = (&p2p.NodeKey{PrivKey: node.NodeKey}).SaveAs(filepath.Join(nodeDir, "config", "node_key.json"))
-		if err != nil {
-			return err
-		}
-
-		(privval.NewFilePV(node.PrivvalKey,
-			filepath.Join(nodeDir, PrivvalKeyFile),
-			filepath.Join(nodeDir, PrivvalStateFile),
-		)).Save()
-
-		// Set up a dummy validator. CometBFT requires a file PV even when not used, so we
-		// give it a dummy such that it will fail if it actually tries to use it.
-		(privval.NewFilePV(ed25519.GenPrivKey(),
-			filepath.Join(nodeDir, PrivvalDummyKeyFile),
-			filepath.Join(nodeDir, PrivvalDummyStateFile),
-		)).Save()
 	}
+	return nil
+}
+
+func createNodeConfigs(node *e2e.Node, nodeDir string) error {
+	cfg, err := MakeConfig(node)
+	if err != nil {
+		return err
+	}
+	config.WriteConfigFile(filepath.Join(nodeDir, "config", "config.toml"), cfg)
+
+	appCfg, err := MakeAppConfig(node)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(nodeDir, "config", "app.toml"), appCfg, 0o644)
+}
+
+func createNodeFiles(node *e2e.Node, nodeDir string, genesis types.GenesisDoc) error {
+	if err := genesis.SaveAs(filepath.Join(nodeDir, "config", "genesis.json")); err != nil {
+		return err
+	}
+
+	if err := saveNodeKey(node, nodeDir); err != nil {
+		return err
+	}
+
+	return setupValidatorFiles(node, nodeDir)
+}
+
+func saveNodeKey(node *e2e.Node, nodeDir string) error {
+	return (&p2p.NodeKey{PrivKey: node.NodeKey}).SaveAs(filepath.Join(nodeDir, "config", "node_key.json"))
+}
+
+func setupValidatorFiles(node *e2e.Node, nodeDir string) error {
+	privVal := privval.NewFilePV(node.PrivvalKey,
+		filepath.Join(nodeDir, PrivvalKeyFile),
+		filepath.Join(nodeDir, PrivvalStateFile))
+	privVal.Save()
+
+	dummyPrivVal := privval.NewFilePV(ed25519.GenPrivKey(),
+		filepath.Join(nodeDir, PrivvalDummyKeyFile),
+		filepath.Join(nodeDir, PrivvalDummyStateFile))
+	dummyPrivVal.Save()
 
 	return nil
 }
 
-// MakeGenesis generates a genesis document.
 func MakeGenesis(testnet *e2e.Testnet) (types.GenesisDoc, error) {
 	genesis := types.GenesisDoc{
 		GenesisTime:     time.Now(),
@@ -127,8 +158,20 @@ func MakeGenesis(testnet *e2e.Testnet) (types.GenesisDoc, error) {
 		ConsensusParams: types.DefaultConsensusParams(),
 		InitialHeight:   testnet.InitialHeight,
 	}
-	// set the app version to 1
 	genesis.ConsensusParams.Version.App = 1
+
+	if err := addValidatorsToGenesis(&genesis, testnet); err != nil {
+		return genesis, err
+	}
+
+	if err := addInitialStateToGenesis(&genesis, testnet); err != nil {
+		return genesis, err
+	}
+
+	return genesis, genesis.ValidateAndComplete()
+}
+
+func addValidatorsToGenesis(genesis *types.GenesisDoc, testnet *e2e.Testnet) error {
 	for validator, power := range testnet.Validators {
 		genesis.Validators = append(genesis.Validators, types.GenesisValidator{
 			Name:    validator.Name,
@@ -137,22 +180,26 @@ func MakeGenesis(testnet *e2e.Testnet) (types.GenesisDoc, error) {
 			Power:   power,
 		})
 	}
-	// The validator set will be sorted internally by CometBFT ranked by power,
-	// but we sort it here as well so that all genesis files are identical.
+
 	sort.Slice(genesis.Validators, func(i, j int) bool {
 		return strings.Compare(genesis.Validators[i].Name, genesis.Validators[j].Name) == -1
 	})
-	if len(testnet.InitialState) > 0 {
-		appState, err := json.Marshal(testnet.InitialState)
-		if err != nil {
-			return genesis, err
-		}
-		genesis.AppState = appState
-	}
-	return genesis, genesis.ValidateAndComplete()
+	return nil
 }
 
-// MakeConfig generates a CometBFT config for a node.
+func addInitialStateToGenesis(genesis *types.GenesisDoc, testnet *e2e.Testnet) error {
+	if len(testnet.InitialState) == 0 {
+		return nil
+	}
+
+	appState, err := json.Marshal(testnet.InitialState)
+	if err != nil {
+		return err
+	}
+	genesis.AppState = appState
+	return nil
+}
+
 func MakeConfig(node *e2e.Node) (*config.Config, error) {
 	cfg := config.DefaultConfig()
 	cfg.Moniker = node.Name
@@ -162,8 +209,32 @@ func MakeConfig(node *e2e.Node) (*config.Config, error) {
 	cfg.P2P.ExternalAddress = fmt.Sprintf("tcp://%v", node.AddressP2P(false))
 	cfg.P2P.AddrBookStrict = false
 	cfg.DBBackend = node.Database
-	cfg.StateSync.DiscoveryTime = 5 * time.Second
+	cfg.StateSync.DiscoveryTime = StateSyncDiscoveryTime
 
+	if err := configureABCI(cfg, node); err != nil {
+		return nil, err
+	}
+
+	if err := configurePrivVal(cfg, node); err != nil {
+		return nil, err
+	}
+
+	if err := configureMode(cfg, node); err != nil {
+		return nil, err
+	}
+
+	configureMempoolAndSync(cfg, node)
+	configureStateSync(cfg, node)
+	configurePeers(cfg, node)
+
+	if node.Prometheus {
+		cfg.Instrumentation.Prometheus = true
+	}
+
+	return cfg, nil
+}
+
+func configureABCI(cfg *config.Config, node *e2e.Node) error {
 	switch node.ABCIProtocol {
 	case e2e.ProtocolUNIX:
 		cfg.ProxyApp = AppAddressUNIX
@@ -176,19 +247,17 @@ func MakeConfig(node *e2e.Node) (*config.Config, error) {
 		cfg.ProxyApp = ""
 		cfg.ABCI = ""
 	default:
-		return nil, fmt.Errorf("unexpected ABCI protocol setting %q", node.ABCIProtocol)
+		return fmt.Errorf("unexpected ABCI protocol setting %q", node.ABCIProtocol)
 	}
+	return nil
+}
 
-	// CometBFT errors if it does not have a privval key set up, regardless of whether
-	// it's actually needed (e.g. for remote KMS or non-validators). We set up a dummy
-	// key here by default, and use the real key for actual validators that should use
-	// the file privval.
+func configurePrivVal(cfg *config.Config, node *e2e.Node) error {
 	cfg.PrivValidatorListenAddr = ""
 	cfg.PrivValidatorKey = PrivvalDummyKeyFile
 	cfg.PrivValidatorState = PrivvalDummyStateFile
 
-	switch node.Mode {
-	case e2e.ModeValidator:
+	if node.Mode == e2e.ModeValidator {
 		switch node.PrivvalProtocol {
 		case e2e.ProtocolFile:
 			cfg.PrivValidatorKey = PrivvalKeyFile
@@ -198,16 +267,26 @@ func MakeConfig(node *e2e.Node) (*config.Config, error) {
 		case e2e.ProtocolTCP:
 			cfg.PrivValidatorListenAddr = PrivvalAddressTCP
 		default:
-			return nil, fmt.Errorf("invalid privval protocol setting %q", node.PrivvalProtocol)
+			return fmt.Errorf("invalid privval protocol setting %q", node.PrivvalProtocol)
 		}
+	}
+	return nil
+}
+
+func configureMode(cfg *config.Config, node *e2e.Node) error {
+	switch node.Mode {
 	case e2e.ModeSeed:
 		cfg.P2P.SeedMode = true
 		cfg.P2P.PexReactor = true
-	case e2e.ModeFull, e2e.ModeLight:
-		// Don't need to do anything, since we're using a dummy privval key by default.
+	case e2e.ModeValidator, e2e.ModeFull, e2e.ModeLight:
+		// Default settings are fine
 	default:
-		return nil, fmt.Errorf("unexpected mode %q", node.Mode)
+		return fmt.Errorf("unexpected mode %q", node.Mode)
 	}
+	return nil
+}
+
+func configureMempoolAndSync(cfg *config.Config, node *e2e.Node) {
 	if node.Mempool != "" {
 		cfg.Mempool.Version = node.Mempool
 	}
@@ -217,46 +296,63 @@ func MakeConfig(node *e2e.Node) (*config.Config, error) {
 	} else {
 		cfg.BlockSync.Version = node.BlockSync
 	}
-
-	if node.StateSync {
-		cfg.StateSync.Enable = true
-		cfg.StateSync.RPCServers = []string{}
-		for _, peer := range node.Testnet.ArchiveNodes() {
-			if peer.Name == node.Name {
-				continue
-			}
-			cfg.StateSync.RPCServers = append(cfg.StateSync.RPCServers, peer.AddressRPC())
-		}
-		if len(cfg.StateSync.RPCServers) < 2 {
-			return nil, errors.New("unable to find 2 suitable state sync RPC servers")
-		}
-	}
-
-	cfg.P2P.Seeds = ""
-	for _, seed := range node.Seeds {
-		if len(cfg.P2P.Seeds) > 0 {
-			cfg.P2P.Seeds += ","
-		}
-		cfg.P2P.Seeds += seed.AddressP2P(true)
-	}
-	cfg.P2P.PersistentPeers = ""
-	for _, peer := range node.PersistentPeers {
-		if len(cfg.P2P.PersistentPeers) > 0 {
-			cfg.P2P.PersistentPeers += ","
-		}
-		cfg.P2P.PersistentPeers += peer.AddressP2P(true)
-	}
-
-	if node.Prometheus {
-		cfg.Instrumentation.Prometheus = true
-	}
-
-	return cfg, nil
 }
 
-// MakeAppConfig generates an ABCI application config for a node.
+func configureStateSync(cfg *config.Config, node *e2e.Node) {
+	if !node.StateSync {
+		return
+	}
+
+	cfg.StateSync.Enable = true
+	cfg.StateSync.RPCServers = []string{}
+	
+	for _, peer := range node.Testnet.ArchiveNodes() {
+		if peer.Name == node.Name {
+			continue
+		}
+		cfg.StateSync.RPCServers = append(cfg.StateSync.RPCServers, peer.AddressRPC())
+	}
+}
+
+func configurePeers(cfg *config.Config, node *e2e.Node) {
+	var seeds, persistentPeers []string
+
+	for _, seed := range node.Seeds {
+		seeds = append(seeds, seed.AddressP2P(true))
+	}
+	cfg.P2P.Seeds = strings.Join(seeds, ",")
+
+	for _, peer := range node.PersistentPeers {
+		persistentPeers = append(persistentPeers, peer.AddressP2P(true))
+	}
+	cfg.P2P.PersistentPeers = strings.Join(persistentPeers, ",")
+}
+
 func MakeAppConfig(node *e2e.Node) ([]byte, error) {
-	cfg := map[string]interface{}{
+	cfg := createBaseAppConfig(node)
+
+	if err := configureAppABCI(cfg, node); err != nil {
+		return nil, err
+	}
+
+	if err := configureAppPrivVal(cfg, node); err != nil {
+		return nil, err
+	}
+
+	if err := configureValidatorUpdates(cfg, node); err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(cfg); err != nil {
+		return nil, fmt.Errorf("failed to generate app config: %w", err)
+	}
+
+	return buf.Bytes(), nil
+}
+
+func createBaseAppConfig(node *e2e.Node) map[string]interface{} {
+	return map[string]interface{}{
 		"chain_id":               node.Testnet.Name,
 		"dir":                    "data/app",
 		"listen":                 AppAddressUNIX,
@@ -271,54 +367,6 @@ func MakeAppConfig(node *e2e.Node) ([]byte, error) {
 		"process_proposal_delay": node.Testnet.ProcessProposalDelay,
 		"check_tx_delay":         node.Testnet.CheckTxDelay,
 	}
-	switch node.ABCIProtocol {
-	case e2e.ProtocolUNIX:
-		cfg["listen"] = AppAddressUNIX
-	case e2e.ProtocolTCP:
-		cfg["listen"] = AppAddressTCP
-	case e2e.ProtocolGRPC:
-		cfg["listen"] = AppAddressTCP
-		cfg["protocol"] = "grpc"
-	case e2e.ProtocolBuiltin:
-		delete(cfg, "listen")
-		cfg["protocol"] = "builtin"
-	default:
-		return nil, fmt.Errorf("unexpected ABCI protocol setting %q", node.ABCIProtocol)
-	}
-	if node.Mode == e2e.ModeValidator {
-		switch node.PrivvalProtocol {
-		case e2e.ProtocolFile:
-		case e2e.ProtocolTCP:
-			cfg["privval_server"] = PrivvalAddressTCP
-			cfg["privval_key"] = PrivvalKeyFile
-			cfg["privval_state"] = PrivvalStateFile
-		case e2e.ProtocolUNIX:
-			cfg["privval_server"] = PrivvalAddressUNIX
-			cfg["privval_key"] = PrivvalKeyFile
-			cfg["privval_state"] = PrivvalStateFile
-		default:
-			return nil, fmt.Errorf("unexpected privval protocol setting %q", node.PrivvalProtocol)
-		}
-	}
-
-	if len(node.Testnet.ValidatorUpdates) > 0 {
-		validatorUpdates := map[string]map[string]int64{}
-		for height, validators := range node.Testnet.ValidatorUpdates {
-			updateVals := map[string]int64{}
-			for node, power := range validators {
-				updateVals[base64.StdEncoding.EncodeToString(node.PrivvalKey.PubKey().Bytes())] = power
-			}
-			validatorUpdates[fmt.Sprintf("%v", height)] = updateVals
-		}
-		cfg["validator_update"] = validatorUpdates
-	}
-
-	var buf bytes.Buffer
-	err := toml.NewEncoder(&buf).Encode(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate app config: %w", err)
-	}
-	return buf.Bytes(), nil
 }
 
 // UpdateConfigStateSync updates the state sync config for a node.
