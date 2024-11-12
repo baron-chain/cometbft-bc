@@ -1,5 +1,5 @@
 package main
-// BC replace TBD
+
 import (
 	"context"
 	"errors"
@@ -9,22 +9,25 @@ import (
 	"strconv"
 
 	"github.com/spf13/cobra"
-
-	"github.com/cometbft/cometbft/libs/log"
-	e2e "github.com/cometbft/cometbft/test/e2e/pkg"
-	"github.com/cometbft/cometbft/test/e2e/pkg/infra"
-	"github.com/cometbft/cometbft/test/e2e/pkg/infra/docker"
+	"github.com/baron-chain/cometbft-bc/libs/log"
+	e2e "github.com/baron-chain/cometbft-bc/test/e2e/pkg"
+	"github.com/baron-chain/cometbft-bc/test/e2e/pkg/infra"
+	"github.com/baron-chain/cometbft-bc/test/e2e/pkg/infra/docker"
 )
 
-const randomSeed = 2308084734268
+const (
+	randomSeed = 2308084734268
+)
 
-var logger = log.NewTMLogger(log.NewSyncWriter(os.Stdout))
+var (
+	logger = log.NewTMLogger(log.NewSyncWriter(os.Stdout))
 
-func main() {
-	NewCLI().Run()
-}
+	// Common errors
+	ErrInvalidTestnet = errors.New("invalid testnet configuration")
+	ErrMissingConfig  = errors.New("missing testnet configuration")
+)
 
-// CLI is the Cobra-based command-line interface.
+// CLI represents the command-line interface application
 type CLI struct {
 	root     *cobra.Command
 	testnet  *e2e.Testnet
@@ -32,6 +35,139 @@ type CLI struct {
 	infp     infra.Provider
 }
 
+// NewCLI creates a new CLI instance
+func NewCLI() *CLI {
+	cli := &CLI{}
+	cli.root = cli.setupRootCommand()
+	return cli
+}
+
+// Run executes the CLI application
+func (cli *CLI) Run() {
+	if err := cli.root.Execute(); err != nil {
+		logger.Error("cli execution failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+// setupRootCommand configures the root command and its flags
+func (cli *CLI) setupRootCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "e2e-test",
+		Short: "End-to-end test runner",
+		Long:  "Runs end-to-end tests for CometBFT networks",
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return cli.handlePreRun(cmd, args)
+		},
+	}
+
+	cli.addGlobalFlags(cmd)
+	cli.addCommands(cmd)
+
+	return cmd
+}
+
+// addGlobalFlags adds global flags to the root command
+func (cli *CLI) addGlobalFlags(cmd *cobra.Command) {
+	cmd.PersistentFlags().StringP("testnet", "t", "", "Path to testnet manifest file")
+	cmd.PersistentFlags().BoolP("preserve", "p", false, "Preserve testnet directory after running tests")
+}
+
+// addCommands adds subcommands to the root command
+func (cli *CLI) addCommands(cmd *cobra.Command) {
+	// Add your subcommands here
+	// Example:
+	// cmd.AddCommand(cli.newStartCommand())
+	// cmd.AddCommand(cli.newStopCommand())
+}
+
+// handlePreRun handles common setup before running commands
+func (cli *CLI) handlePreRun(cmd *cobra.Command, args []string) error {
+	testnetFile, err := cmd.Flags().GetString("testnet")
+	if err != nil {
+		return fmt.Errorf("failed to get testnet flag: %w", err)
+	}
+
+	if testnetFile == "" {
+		return ErrMissingConfig
+	}
+
+	preserve, err := cmd.Flags().GetBool("preserve")
+	if err != nil {
+		return fmt.Errorf("failed to get preserve flag: %w", err)
+	}
+	cli.preserve = preserve
+
+	testnet, err := LoadTestnet(testnetFile)
+	if err != nil {
+		return fmt.Errorf("failed to load testnet: %w", err)
+	}
+	cli.testnet = testnet
+
+	if err := cli.setupInfraProvider(); err != nil {
+		return fmt.Errorf("failed to setup infrastructure provider: %w", err)
+	}
+
+	return nil
+}
+
+// LoadTestnet loads a testnet configuration from a file
+func LoadTestnet(file string) (*e2e.Testnet, error) {
+	testnet, err := e2e.LoadTestnet(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load testnet %q: %w", file, err)
+	}
+
+	if err := validateTestnet(testnet); err != nil {
+		return nil, err
+	}
+
+	return testnet, nil
+}
+
+// validateTestnet validates the testnet configuration
+func validateTestnet(testnet *e2e.Testnet) error {
+	if testnet == nil {
+		return ErrInvalidTestnet
+	}
+
+	if len(testnet.Nodes) == 0 {
+		return fmt.Errorf("%w: no nodes specified", ErrInvalidTestnet)
+	}
+
+	return nil
+}
+
+// setupInfraProvider initializes the infrastructure provider
+func (cli *CLI) setupInfraProvider() error {
+	var err error
+	cli.infp, err = docker.NewProvider(cli.testnet)
+	if err != nil {
+		return fmt.Errorf("failed to create docker provider: %w", err)
+	}
+	return nil
+}
+
+// cleanup performs cleanup operations
+func (cli *CLI) cleanup(ctx context.Context) error {
+	if cli.preserve {
+		logger.Info("Preserving testnet directory", "dir", cli.testnet.Dir)
+		return nil
+	}
+
+	if err := cli.infp.Clean(ctx); err != nil {
+		return fmt.Errorf("failed to clean up infrastructure: %w", err)
+	}
+
+	return os.RemoveAll(cli.testnet.Dir)
+}
+
+func main() {
+	// Set random seed for reproducibility
+	rand.Seed(randomSeed)
+	
+	NewCLI().Run()
+}
 // NewCLI sets up the CLI.
 func NewCLI() *CLI {
 	cli := &CLI{}
