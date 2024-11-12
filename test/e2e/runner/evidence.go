@@ -1,4 +1,3 @@
-//BC GEN TEST - #1023811F
 package main
 
 import (
@@ -11,113 +10,181 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/cometbft/cometbft/crypto"
-	"github.com/cometbft/cometbft/crypto/tmhash"
-	"github.com/cometbft/cometbft/internal/test"
-	cmtjson "github.com/cometbft/cometbft/libs/json"
-	"github.com/cometbft/cometbft/privval"
-	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
-	cmtversion "github.com/cometbft/cometbft/proto/tendermint/version"
-	e2e "github.com/cometbft/cometbft/test/e2e/pkg"
-	"github.com/cometbft/cometbft/types"
-	"github.com/cometbft/cometbft/version"
+	"github.com/baron-chain/cometbft-bc/crypto"
+	"github.com/baron-chain/cometbft-bc/crypto/tmhash"
+	"github.com/baron-chain/cometbft-bc/internal/test"
+	cmtjson "github.com/baron-chain/cometbft-bc/libs/json"
+	"github.com/baron-chain/cometbft-bc/privval"
+	cmtproto "github.com/baron-chain/cometbft-bc/proto/tendermint/types"
+	cmtversion "github.com/baron-chain/cometbft-bc/proto/tendermint/version"
+	e2e "github.com/baron-chain/cometbft-bc/test/e2e/pkg"
+	"github.com/baron-chain/cometbft-bc/types"
+	"github.com/baron-chain/cometbft-bc/version"
 )
 
-// 1 in 4 evidence is light client evidence, the rest is duplicate vote evidence
-const lightClientEvidenceRatio = 4
+const (
+	lightClientEvidenceRatio = 4
+	defaultValidatorLimit   = 100
+	recoveryWaitTime       = 30 * time.Second
+	evidenceWaitTime       = time.Minute
+	heightBuffer          = 3
+)
 
-// InjectEvidence takes a running testnet and generates an amount of valid
-// evidence and broadcasts it to a random node through the rpc endpoint `/broadcast_evidence`.
-// Evidence is random and can be a mixture of LightClientAttackEvidence and
-// DuplicateVoteEvidence.
+type EvidenceInjector struct {
+	testnet      *e2e.Testnet
+	targetNode   *e2e.Node
+	rand         *rand.Rand
+	evidenceHeight int64
+	validators    *types.ValidatorSet
+	privVals      map[string]types.PrivValidator
+	blockTime     time.Time
+}
+
+// NewEvidenceInjector creates a new evidence injector instance
+func NewEvidenceInjector(r *rand.Rand, testnet *e2e.Testnet) *EvidenceInjector {
+	return &EvidenceInjector{
+		testnet: testnet,
+		rand:    r,
+		privVals: make(map[string]types.PrivValidator),
+	}
+}
+
+// InjectEvidence injects the specified amount of evidence into the network
 func InjectEvidence(ctx context.Context, r *rand.Rand, testnet *e2e.Testnet, amount int) error {
-	// select a random node
-	var targetNode *e2e.Node
+	injector := NewEvidenceInjector(r, testnet)
+	return injector.Inject(ctx, amount)
+}
 
-	for _, idx := range r.Perm(len(testnet.Nodes)) {
-		targetNode = testnet.Nodes[idx]
-
-		if targetNode.Mode == e2e.ModeSeed || targetNode.Mode == e2e.ModeLight {
-			targetNode = nil
-			continue
-		}
-
-		break
+func (ei *EvidenceInjector) Inject(ctx context.Context, amount int) error {
+	if err := ei.setup(ctx); err != nil {
+		return fmt.Errorf("setup failed: %w", err)
 	}
 
-	if targetNode == nil {
-		return errors.New("could not find node to inject evidence into")
+	if err := ei.waitForHeight(ctx); err != nil {
+		return fmt.Errorf("height wait failed: %w", err)
 	}
 
-	logger.Info(fmt.Sprintf("Injecting evidence through %v (amount: %d)...", targetNode.Name, amount))
+	if err := ei.injectEvidence(ctx, amount); err != nil {
+		return fmt.Errorf("evidence injection failed: %w", err)
+	}
 
-	client, err := targetNode.Client()
-	if err != nil {
+	return ei.waitForRecovery(ctx)
+}
+
+func (ei *EvidenceInjector) setup(ctx context.Context) error {
+	if err := ei.selectTargetNode(); err != nil {
 		return err
 	}
 
-	// request the latest block and validator set from the node
+	if err := ei.fetchNetworkState(ctx); err != nil {
+		return err
+	}
+
+	privVals, err := getPrivateValidatorKeys(ei.testnet)
+	if err != nil {
+		return fmt.Errorf("failed to get private validator keys: %w", err)
+	}
+	ei.privVals = privVals
+
+	return nil
+}
+
+func (ei *EvidenceInjector) selectTargetNode() error {
+	for _, idx := range ei.rand.Perm(len(ei.testnet.Nodes)) {
+		node := ei.testnet.Nodes[idx]
+		if node.Mode != e2e.ModeSeed && node.Mode != e2e.ModeLight {
+			ei.targetNode = node
+			return nil
+		}
+	}
+	return errors.New("could not find suitable node to inject evidence")
+}
+
+func (ei *EvidenceInjector) fetchNetworkState(ctx context.Context) error {
+	client, err := ei.targetNode.Client()
+	if err != nil {
+		return fmt.Errorf("failed to create client: %w", err)
+	}
+
 	blockRes, err := client.Block(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get block: %w", err)
 	}
-	evidenceHeight := blockRes.Block.Height
-	waitHeight := blockRes.Block.Height + 3
+	ei.evidenceHeight = blockRes.Block.Height
+	ei.blockTime = blockRes.Block.Time
 
-	nValidators := 100
-	valRes, err := client.Validators(ctx, &evidenceHeight, nil, &nValidators)
+	valRes, err := client.Validators(ctx, &ei.evidenceHeight, nil, &defaultValidatorLimit)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get validators: %w", err)
 	}
 
 	valSet, err := types.ValidatorSetFromExistingValidators(valRes.Validators)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create validator set: %w", err)
 	}
+	ei.validators = valSet
 
-	// get the private keys of all the validators in the network
-	privVals, err := getPrivateValidatorKeys(testnet)
+	return nil
+}
+
+func (ei *EvidenceInjector) waitForHeight(ctx context.Context) error {
+	waitHeight := ei.evidenceHeight + heightBuffer
+	_, err := waitForNode(ei.targetNode, waitHeight, evidenceWaitTime)
+	return err
+}
+
+func (ei *EvidenceInjector) injectEvidence(ctx context.Context, amount int) error {
+	client, err := ei.targetNode.Client()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create client: %w", err)
 	}
 
-	// wait for the node to reach the height above the forged height so that
-	// it is able to validate the evidence
-	_, err = waitForNode(targetNode, waitHeight, time.Minute)
-	if err != nil {
-		return err
-	}
+	logger.Info(fmt.Sprintf("Injecting evidence through %v (amount: %d)...", ei.targetNode.Name, amount))
 
-	var ev types.Evidence
 	for i := 1; i <= amount; i++ {
-		if i%lightClientEvidenceRatio == 0 {
-			ev, err = generateLightClientAttackEvidence(
-				ctx, privVals, evidenceHeight, valSet, testnet.Name, blockRes.Block.Time,
-			)
-		} else {
-			ev, err = generateDuplicateVoteEvidence(
-				ctx, privVals, evidenceHeight, valSet, testnet.Name, blockRes.Block.Time,
-			)
-		}
+		evidence, err := ei.generateEvidence(ctx, i)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to generate evidence: %w", err)
 		}
 
-		_, err := client.BroadcastEvidence(ctx, ev)
-		if err != nil {
-			return err
+		if _, err := client.BroadcastEvidence(ctx, evidence); err != nil {
+			return fmt.Errorf("failed to broadcast evidence: %w", err)
 		}
 	}
 
-	// wait for the node to reach the height above the forged height so that
-	// it is able to validate the evidence
-	_, err = waitForNode(targetNode, blockRes.Block.Height+2, 30*time.Second)
+	return nil
+}
+
+func (ei *EvidenceInjector) generateEvidence(ctx context.Context, index int) (types.Evidence, error) {
+	if index%lightClientEvidenceRatio == 0 {
+		return generateLightClientAttackEvidence(
+			ctx,
+			ei.privVals,
+			ei.evidenceHeight,
+			ei.validators,
+			ei.testnet.Name,
+			ei.blockTime,
+		)
+	}
+
+	return generateDuplicateVoteEvidence(
+		ctx,
+		ei.privVals,
+		ei.evidenceHeight,
+		ei.validators,
+		ei.testnet.Name,
+		ei.blockTime,
+	)
+}
+
+func (ei *EvidenceInjector) waitForRecovery(ctx context.Context) error {
+	recoveryHeight := ei.evidenceHeight + 2
+	_, err := waitForNode(ei.targetNode, recoveryHeight, recoveryWaitTime)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed waiting for recovery: %w", err)
 	}
 
-	logger.Info(fmt.Sprintf("Finished sending evidence (height %d)", blockRes.Block.Height+2))
-
+	logger.Info(fmt.Sprintf("Finished sending evidence (height %d)", recoveryHeight))
 	return nil
 }
 
