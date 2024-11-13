@@ -1,90 +1,180 @@
-#BC GEN TEST - #1023811F
-# Chain Configuration
-# Last updated: 2024-11-11
+#----------------------------------------
+# Baron Chain Configuration
+# Version: v1.0.0
+# Last Updated: 2024-11-13
+#----------------------------------------
 
+#----------------------------------------
 # Core Chain Settings
+#----------------------------------------
 chain:
-  id: "test-chain"
+  id: "baron-test-chain"
   network: testnet  # Options: mainnet, testnet, devnet
+  version: v1.0.0
   protocol_version: v1
   protocol: builtin  # Options: builtin, external, remote
+  key_type: kyber    # Options: kyber, dilithium, falcon
 
+#----------------------------------------
+# Quantum-Safe Settings
+#----------------------------------------
+crypto:
+  quantum_safe: true
+  encryption_scheme: kyber
+  signature_scheme: dilithium
+  key_exchange: kyber
+  hash_function: sha3-256
+
+#----------------------------------------
 # State Management
+#----------------------------------------
 state:
   snapshot:
-    interval: 100  # Blocks between snapshots
-    retention: 10  # Number of snapshots to keep
+    interval: 100            # Blocks between snapshots
+    retention: 10            # Number of snapshots to keep
     compression: true
+    format: proto           # Options: proto, json
   persist:
-    interval: 1  # Blocks between state persistence
-    mode: full  # Options: full, pruned, archive
-    path: data/chain
+    interval: 1             # Blocks between state persistence
+    mode: full             # Options: full, pruned, archive
+    path: data/baronchain
+    backup: true
+  sync:
+    enable: true
+    max_peers: 3
+    trust_period: 168h     # 7 days
 
+#----------------------------------------
 # Consensus Settings
+#----------------------------------------
 consensus:
   algorithm: tendermint
-  block_time: 5000  # ms
+  block_time: 1000         # ms
   timeouts:
-    commit: 1000  # ms
-    propose: 3000  # ms
+    commit: 1000          # ms
+    propose: 3000         # ms
+    prevote: 1000        # ms
+    precommit: 1000      # ms
+  validators:
+    min_stake: 100000BARON
+    max_validators: 100
+    power_change_interval: 100
 
+#----------------------------------------
 # Performance Tuning
+#----------------------------------------
 performance:
   max_txs_per_block: 10000
-  max_block_size: 2MB
+  max_block_size: 21MB
+  max_evidence_size: 1MB
   mempool:
     size: 5000
-    cache: 100MB
+    cache: 2GB
+    max_tx_bytes: 1MB
+  cache:
+    size: 1GB
+    pruning_interval: 100
+  optimization:
+    parallel_execution: true
+    batch_verification: true
 
+#----------------------------------------
 # Network Settings
+#----------------------------------------
 network:
-  listen_addr: tcp://0.0.0.0:26656
-  rpc_addr: tcp://0.0.0.0:26657
-  grpc_addr: 0.0.0.0:9090
-  max_connections: 50
-  connection_timeout: 5  # seconds
+  p2p:
+    listen_addr: tcp://0.0.0.0:26656
+    max_connections: 100
+    max_incoming_connections: 40
+    max_outgoing_connections: 10
+    handshake_timeout: 20
+    dial_timeout: 3
+  rpc:
+    listen_addr: tcp://0.0.0.0:26657
+    max_open_connections: 900
+    max_subscription_clients: 100
+  grpc:
+    listen_addr: 0.0.0.0:9090
+    max_recv_msg_size: 10MB
+    max_send_msg_size: 10MB
 
+#----------------------------------------
 # API Configuration
+#----------------------------------------
 api:
   enable: true
   address: 0.0.0.0:1317
   swagger: true
   cors_allowed_origins: ["*"]
   max_open_connections: 1000
+  rate_limit: 1000
+  timeout: 10
 
+#----------------------------------------
 # Metrics & Monitoring
+#----------------------------------------
 metrics:
   enable: true
   prometheus: true
   prometheus_addr: 0.0.0.0:26660
-  interval: 10  # seconds
+  interval: 10             # seconds
+  retention_days: 30
+  detailed: true
+  pprof: false
 
+#----------------------------------------
 # Logging Configuration
+#----------------------------------------
 log:
-  level: info  # Options: debug, info, warn, error
-  format: json  # Options: json, text
-  output: stdout  # Options: stdout, file
-  file_path: logs/chain.log
+  level: info             # Options: debug, info, warn, error
+  format: json           # Options: json, text
+  output: stdout        # Options: stdout, file
+  file:
+    path: logs/baronchain.log
+    max_size: 100MB
+    max_age: 7          # days
+    max_backups: 10
+    compress: true
 
+#----------------------------------------
+# Security Settings
+#----------------------------------------
+security:
+  min_gas_price: 0.001BARON
+  max_body_bytes: 5MB
+  max_header_bytes: 1MB
+  firewall:
+    enable: true
+    max_connections_per_ip: 3
+    whitelist: []
+    blacklist: []
+  timeouts:
+    read: 5
+    write: 10
+    idle: 15            # seconds
+  evidence:
+    max_age_blocks: 100000
+    max_age_duration: 172800s  # 48 hours
+    max_bytes: 5MB
+
+#----------------------------------------
+# Feature Flags
+#----------------------------------------
+features:
+  state_sync: true
+  fast_sync: true
+  dynamic_upgrades: false
+  experimental: false
+  quantum_ready: true
+  metrics_detailed: true
+  auto_upgrade: false
+
+#----------------------------------------
 # Development Settings
+#----------------------------------------
 dev:
   debug: false
   profiler: false
   trace: false
-
-# Security Settings
-security:
-  minimum_gas_prices: 0.001stake
-  max_body_bytes: 1MB
-  max_header_bytes: 1MB
-  timeouts:
-    read: 5
-    write: 10
-    idle: 15  # seconds
-
-# Feature Flags
-features:
-  experimental: false
-  state_sync: true
-  fast_sync: true
-  dynamic_upgrades: false
+  test_mode: false
+  mock_quantum: false
