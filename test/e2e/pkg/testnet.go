@@ -1,310 +1,208 @@
-//BC GEN TEST - #1023811F
 package e2e
 
 import (
-	"errors"
-	"fmt"
-	"io"
-	"math/rand"
-	"net"
-	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
-	"time"
+    "errors"
+    "fmt"
+    "io"
+    "math/rand"
+    "net"
+    "path/filepath"
+    "sort"
+    "strconv"
+    "strings"
+    "time"
 
-	"github.com/cometbft/cometbft/crypto"
-	"github.com/cometbft/cometbft/crypto/ed25519"
-	"github.com/cometbft/cometbft/crypto/secp256k1"
-	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
+    "github.com/baron-chain/cometbft-bc/crypto"
+    "github.com/baron-chain/cometbft-bc/crypto/ed25519"
+    "github.com/baron-chain/cometbft-bc/crypto/secp256k1"
+    rpchttp "github.com/baron-chain/cometbft-bc/rpc/client/http"
 )
 
 const (
-	randomSeed               int64  = 2308084734268
-	proxyPortFirst           uint32 = 5701
-	prometheusProxyPortFirst uint32 = 6701
-
-	defaultBatchSize   = 2
-	defaultConnections = 1
-	defaultTxSizeBytes = 1024
-
-	localVersion = "cometbft/e2e-node:local-version"
+    randomSeed = 2308084734268
+    proxyPortFirst = 5701
+    prometheusProxyPortFirst = 6701
+    defaultBatchSize = 2
+    defaultConnections = 1
+    defaultTxSizeBytes = 1024
+    localVersion = "baron-chain/e2e-node:local-version"
+    evidenceAgeHeight = 7
+    evidenceAgeTime = 500 * time.Millisecond
 )
 
 type (
-	Mode         string
-	Protocol     string
-	Perturbation string
+    Mode string
+    Protocol string
+    Perturbation string
 )
 
 const (
-	ModeValidator Mode = "validator"
-	ModeFull      Mode = "full"
-	ModeLight     Mode = "light"
-	ModeSeed      Mode = "seed"
+    ModeValidator Mode = "validator"
+    ModeFull Mode = "full"
+    ModeLight Mode = "light"
+    ModeSeed Mode = "seed"
 
-	ProtocolBuiltin Protocol = "builtin"
-	ProtocolFile    Protocol = "file"
-	ProtocolGRPC    Protocol = "grpc"
-	ProtocolTCP     Protocol = "tcp"
-	ProtocolUNIX    Protocol = "unix"
+    ProtocolBuiltin Protocol = "builtin"
+    ProtocolFile Protocol = "file" 
+    ProtocolGRPC Protocol = "grpc"
+    ProtocolTCP Protocol = "tcp"
+    ProtocolUNIX Protocol = "unix"
 
-	PerturbationDisconnect Perturbation = "disconnect"
-	PerturbationKill       Perturbation = "kill"
-	PerturbationPause      Perturbation = "pause"
-	PerturbationRestart    Perturbation = "restart"
-	PerturbationUpgrade    Perturbation = "upgrade"
-
-	EvidenceAgeHeight int64         = 7
-	EvidenceAgeTime   time.Duration = 500 * time.Millisecond
+    PerturbationDisconnect Perturbation = "disconnect"
+    PerturbationKill Perturbation = "kill"
+    PerturbationPause Perturbation = "pause"
+    PerturbationRestart Perturbation = "restart"
+    PerturbationUpgrade Perturbation = "upgrade"
 )
 
-// Testnet represents a single testnet.
 type Testnet struct {
-	Name                 string
-	File                 string
-	Dir                  string
-	IP                   *net.IPNet
-	InitialHeight        int64
-	InitialState         map[string]string
-	Validators           map[*Node]int64
-	ValidatorUpdates     map[int64]map[*Node]int64
-	Nodes                []*Node
-	KeyType              string
-	Evidence             int
-	LoadTxSizeBytes      int
-	LoadTxBatchSize      int
-	LoadTxConnections    int
-	ABCIProtocol         string
-	PrepareProposalDelay time.Duration
-	ProcessProposalDelay time.Duration
-	CheckTxDelay         time.Duration
-	UpgradeVersion       string
-	Prometheus           bool
+    Name string
+    File string
+    Dir string
+    IP *net.IPNet
+    InitialHeight int64
+    InitialState map[string]string
+    Validators map[*Node]int64
+    ValidatorUpdates map[int64]map[*Node]int64
+    Nodes []*Node
+    KeyType string
+    Evidence int
+    LoadTxSizeBytes int
+    LoadTxBatchSize int
+    LoadTxConnections int
+    ABCIProtocol string
+    PrepareProposalDelay time.Duration
+    ProcessProposalDelay time.Duration
+    CheckTxDelay time.Duration
+    UpgradeVersion string
+    Prometheus bool
 }
 
-// Node represents a CometBFT node in a testnet.
 type Node struct {
-	Name                string
-	Version             string
-	Testnet             *Testnet
-	Mode                Mode
-	PrivvalKey          crypto.PrivKey
-	NodeKey             crypto.PrivKey
-	IP                  net.IP
-	ProxyPort           uint32
-	StartAt             int64
-	BlockSync           string
-	StateSync           bool
-	Mempool             string
-	Database            string
-	ABCIProtocol        Protocol
-	PrivvalProtocol     Protocol
-	PersistInterval     uint64
-	SnapshotInterval    uint64
-	RetainBlocks        uint64
-	Seeds               []*Node
-	PersistentPeers     []*Node
-	Perturbations       []Perturbation
-	SendNoLoad          bool
-	Prometheus          bool
-	PrometheusProxyPort uint32
+    Name string
+    Version string
+    Testnet *Testnet
+    Mode Mode
+    PrivvalKey crypto.PrivKey
+    NodeKey crypto.PrivKey
+    IP net.IP
+    ProxyPort uint32
+    StartAt int64
+    BlockSync string
+    StateSync bool
+    Mempool string
+    Database string
+    ABCIProtocol Protocol
+    PrivvalProtocol Protocol
+    PersistInterval uint64
+    SnapshotInterval uint64
+    RetainBlocks uint64
+    Seeds []*Node
+    PersistentPeers []*Node
+    Perturbations []Perturbation
+    SendNoLoad bool
+    Prometheus bool
+    PrometheusProxyPort uint32
 }
 
-// LoadTestnet loads a testnet from a manifest file, using the filename to
-// determine the testnet name and directory (from the basename of the file).
-// The testnet generation must be deterministic, since it is generated
-// separately by the runner and the test cases. For this reason, testnets use a
-// random seed to generate e.g. keys.
 func LoadTestnet(manifest Manifest, fname string, ifd InfrastructureData) (*Testnet, error) {
-	dir := strings.TrimSuffix(fname, filepath.Ext(fname))
-	keyGen := newKeyGenerator(randomSeed)
-	proxyPortGen := newPortGenerator(proxyPortFirst)
-	prometheusProxyPortGen := newPortGenerator(prometheusProxyPortFirst)
-	_, ipNet, err := net.ParseCIDR(ifd.Network)
-	if err != nil {
-		return nil, fmt.Errorf("invalid IP network address %q: %w", ifd.Network, err)
-	}
+    dir := strings.TrimSuffix(fname, filepath.Ext(fname))
+    keyGen := newKeyGenerator(randomSeed)
+    proxyPortGen := newPortGenerator(proxyPortFirst)
+    prometheusProxyPortGen := newPortGenerator(prometheusProxyPortFirst)
 
-	testnet := &Testnet{
-		Name:                 filepath.Base(dir),
-		File:                 fname,
-		Dir:                  dir,
-		IP:                   ipNet,
-		InitialHeight:        1,
-		InitialState:         manifest.InitialState,
-		Validators:           map[*Node]int64{},
-		ValidatorUpdates:     map[int64]map[*Node]int64{},
-		Nodes:                []*Node{},
-		Evidence:             manifest.Evidence,
-		LoadTxSizeBytes:      manifest.LoadTxSizeBytes,
-		LoadTxBatchSize:      manifest.LoadTxBatchSize,
-		LoadTxConnections:    manifest.LoadTxConnections,
-		ABCIProtocol:         manifest.ABCIProtocol,
-		PrepareProposalDelay: manifest.PrepareProposalDelay,
-		ProcessProposalDelay: manifest.ProcessProposalDelay,
-		CheckTxDelay:         manifest.CheckTxDelay,
-		UpgradeVersion:       manifest.UpgradeVersion,
-		Prometheus:           manifest.Prometheus,
-	}
-	if len(manifest.KeyType) != 0 {
-		testnet.KeyType = manifest.KeyType
-	}
-	if manifest.InitialHeight > 0 {
-		testnet.InitialHeight = manifest.InitialHeight
-	}
-	if testnet.ABCIProtocol == "" {
-		testnet.ABCIProtocol = string(ProtocolBuiltin)
-	}
-	if testnet.UpgradeVersion == "" {
-		testnet.UpgradeVersion = localVersion
-	}
-	if testnet.LoadTxConnections == 0 {
-		testnet.LoadTxConnections = defaultConnections
-	}
-	if testnet.LoadTxBatchSize == 0 {
-		testnet.LoadTxBatchSize = defaultBatchSize
-	}
-	if testnet.LoadTxSizeBytes == 0 {
-		testnet.LoadTxSizeBytes = defaultTxSizeBytes
-	}
+    ipNet, err := parseNetwork(ifd.Network)
+    if err != nil {
+        return nil, err
+    }
 
-	// Set up nodes, in alphabetical order (IPs and ports get same order).
-	nodeNames := []string{}
-	for name := range manifest.Nodes {
-		nodeNames = append(nodeNames, name)
-	}
-	sort.Strings(nodeNames)
+    testnet := newTestnet(dir, fname, ipNet, manifest)
+    if err := setupNodes(testnet, manifest, ifd, keyGen, proxyPortGen, prometheusProxyPortGen); err != nil {
+        return nil, err
+    }
 
-	for _, name := range nodeNames {
-		nodeManifest := manifest.Nodes[name]
-		ind, ok := ifd.Instances[name]
-		if !ok {
-			return nil, fmt.Errorf("information for node '%s' missing from infrastructure data", name)
-		}
-		v := nodeManifest.Version
-		if v == "" {
-			v = localVersion
-		}
+    if err := setupPeers(testnet, manifest); err != nil {
+        return nil, err
+    }
 
-		node := &Node{
-			Name:             name,
-			Version:          v,
-			Testnet:          testnet,
-			PrivvalKey:       keyGen.Generate(manifest.KeyType),
-			NodeKey:          keyGen.Generate("ed25519"),
-			IP:               ind.IPAddress,
-			ProxyPort:        proxyPortGen.Next(),
-			Mode:             ModeValidator,
-			Database:         "goleveldb",
-			ABCIProtocol:     Protocol(testnet.ABCIProtocol),
-			PrivvalProtocol:  ProtocolFile,
-			StartAt:          nodeManifest.StartAt,
-			BlockSync:        nodeManifest.BlockSync,
-			Mempool:          nodeManifest.Mempool,
-			StateSync:        nodeManifest.StateSync,
-			PersistInterval:  1,
-			SnapshotInterval: nodeManifest.SnapshotInterval,
-			RetainBlocks:     nodeManifest.RetainBlocks,
-			Perturbations:    []Perturbation{},
-			SendNoLoad:       nodeManifest.SendNoLoad,
-			Prometheus:       testnet.Prometheus,
-		}
-		if node.StartAt == testnet.InitialHeight {
-			node.StartAt = 0 // normalize to 0 for initial nodes, since code expects this
-		}
-		if nodeManifest.Mode != "" {
-			node.Mode = Mode(nodeManifest.Mode)
-		}
-		if node.Mode == ModeLight {
-			node.ABCIProtocol = ProtocolBuiltin
-		}
-		if nodeManifest.Database != "" {
-			node.Database = nodeManifest.Database
-		}
-		if nodeManifest.PrivvalProtocol != "" {
-			node.PrivvalProtocol = Protocol(nodeManifest.PrivvalProtocol)
-		}
-		if nodeManifest.PersistInterval != nil {
-			node.PersistInterval = *nodeManifest.PersistInterval
-		}
-		if node.Prometheus {
-			node.PrometheusProxyPort = prometheusProxyPortGen.Next()
-		}
-		for _, p := range nodeManifest.Perturb {
-			node.Perturbations = append(node.Perturbations, Perturbation(p))
-		}
-		testnet.Nodes = append(testnet.Nodes, node)
-	}
+    if err := setupValidators(testnet, manifest); err != nil {
+        return nil, err
+    }
 
-	// We do a second pass to set up seeds and persistent peers, which allows graph cycles.
-	for _, node := range testnet.Nodes {
-		nodeManifest, ok := manifest.Nodes[node.Name]
-		if !ok {
-			return nil, fmt.Errorf("failed to look up manifest for node %q", node.Name)
-		}
-		for _, seedName := range nodeManifest.Seeds {
-			seed := testnet.LookupNode(seedName)
-			if seed == nil {
-				return nil, fmt.Errorf("unknown seed %q for node %q", seedName, node.Name)
-			}
-			node.Seeds = append(node.Seeds, seed)
-		}
-		for _, peerName := range nodeManifest.PersistentPeers {
-			peer := testnet.LookupNode(peerName)
-			if peer == nil {
-				return nil, fmt.Errorf("unknown persistent peer %q for node %q", peerName, node.Name)
-			}
-			node.PersistentPeers = append(node.PersistentPeers, peer)
-		}
+    return testnet, testnet.Validate()
+}
 
-		// If there are no seeds or persistent peers specified, default to persistent
-		// connections to all other nodes.
-		if len(node.PersistentPeers) == 0 && len(node.Seeds) == 0 {
-			for _, peer := range testnet.Nodes {
-				if peer.Name == node.Name {
-					continue
-				}
-				node.PersistentPeers = append(node.PersistentPeers, peer)
-			}
-		}
-	}
+func (t *Testnet) LookupNode(name string) *Node {
+    for _, node := range t.Nodes {
+        if node.Name == name {
+            return node
+        }
+    }
+    return nil
+}
 
-	// Set up genesis validators. If not specified explicitly, use all validator nodes.
-	if manifest.Validators != nil {
-		for validatorName, power := range *manifest.Validators {
-			validator := testnet.LookupNode(validatorName)
-			if validator == nil {
-				return nil, fmt.Errorf("unknown validator %q", validatorName)
-			}
-			testnet.Validators[validator] = power
-		}
-	} else {
-		for _, node := range testnet.Nodes {
-			if node.Mode == ModeValidator {
-				testnet.Validators[node] = 100
-			}
-		}
-	}
+func (t *Testnet) RandomNode() *Node {
+    for {
+        node := t.Nodes[rand.Intn(len(t.Nodes))]
+        if node.Mode != ModeSeed {
+            return node
+        }
+    }
+}
 
-	// Set up validator updates.
-	for heightStr, validators := range manifest.ValidatorUpdates {
-		height, err := strconv.Atoi(heightStr)
-		if err != nil {
-			return nil, fmt.Errorf("invalid validator update height %q: %w", height, err)
-		}
-		valUpdate := map[*Node]int64{}
-		for name, power := range validators {
-			node := testnet.LookupNode(name)
-			if node == nil {
-				return nil, fmt.Errorf("unknown validator %q for update at height %v", name, height)
-			}
-			valUpdate[node] = power
-		}
-		testnet.ValidatorUpdates[int64(height)] = valUpdate
-	}
+func (t *Testnet) ArchiveNodes() []*Node {
+    var nodes []*Node
+    for _, node := range t.Nodes {
+        if !node.Stateless() && node.StartAt == 0 && node.RetainBlocks == 0 {
+            nodes = append(nodes, node)
+        }
+    }
+    return nodes
+}
 
-	return testnet, testnet.Validate()
+func (n *Node) AddressP2P(withID bool) string {
+    ip := formatIP(n.IP)
+    addr := fmt.Sprintf("%v:26656", ip)
+    if withID {
+        addr = fmt.Sprintf("%x@%v", n.NodeKey.PubKey().Address().Bytes(), addr)
+    }
+    return addr
+}
+
+func (n *Node) AddressRPC() string {
+    return fmt.Sprintf("%v:26657", formatIP(n.IP))
+}
+
+func (n *Node) Client() (*rpchttp.HTTP, error) {
+    return rpchttp.New(fmt.Sprintf("http://127.0.0.1:%v", n.ProxyPort), "/websocket")
+}
+
+func (n *Node) Stateless() bool {
+    return n.Mode == ModeLight || n.Mode == ModeSeed
+}
+
+type keyGenerator struct {
+    random *rand.Rand
+}
+
+func newKeyGenerator(seed int64) *keyGenerator {
+    return &keyGenerator{random: rand.New(rand.NewSource(seed))}
+}
+
+func (g *keyGenerator) Generate(keyType string) crypto.PrivKey {
+    seed := make([]byte, ed25519.SeedSize)
+    if _, err := io.ReadFull(g.random, seed); err != nil {
+        panic(err)
+    }
+
+    switch keyType {
+    case "secp256k1":
+        return secp256k1.GenPrivKeySecp256k1(seed)
+    case "", "ed25519":
+        return ed25519.GenPrivKeyFromSecret(seed)
+    default:
+        panic("unsupported key type: " + keyType)
+    }
 }
 
 // Validate validates a testnet.
