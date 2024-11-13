@@ -1,81 +1,178 @@
-//BC GEN TEST - #1023811F
 package e2e
-// BC replace TBD
+
 import (
-	"encoding/json"
-	"fmt"
-	"net"
-	"os"
+    "encoding/json"
+    "fmt"
+    "net"
+    "os"
 )
 
 const (
-	dockerIPv4CIDR = "10.186.73.0/24"
-	dockerIPv6CIDR = "fd80:b10c::/48"
-
-	globalIPv4CIDR = "0.0.0.0/0"
+    // Network CIDR configurations
+    dockerIPv4CIDR = "10.186.73.0/24"
+    dockerIPv6CIDR = "fd80:b10c::/48"
+    globalIPv4CIDR = "0.0.0.0/0"
+    
+    // Baron Chain specific network configurations
+    baronNetworkPrefix = "baron"
+    defaultIPAllocation = 254 // Maximum hosts in /24 subnet
 )
 
-// InfrastructureData contains the relevant information for a set of existing
-// infrastructure that is to be used for running a testnet.
 type InfrastructureData struct {
-
-	// Provider is the name of infrastructure provider backing the testnet.
-	// For example, 'docker' if it is running locally in a docker network or
-	// 'digital-ocean', 'aws', 'google', etc. if it is from a cloud provider.
-	Provider string `json:"provider"`
-
-	// Instances is a map of all of the machine instances on which to run
-	// processes for a testnet.
-	// The key of the map is the name of the instance, which each must correspond
-	// to the names of one of the testnet nodes defined in the testnet manifest.
-	Instances map[string]InstanceData `json:"instances"`
-
-	// Network is the CIDR notation range of IP addresses that all of the instances'
-	// IP addresses are expected to be within.
-	Network string `json:"network"`
+    Provider  string                   `json:"provider"`
+    Instances map[string]InstanceData  `json:"instances"`
+    Network   string                   `json:"network"`
 }
 
-// InstanceData contains the relevant information for a machine instance backing
-// one of the nodes in the testnet.
 type InstanceData struct {
-	IPAddress net.IP `json:"ip_address"`
+    IPAddress net.IP `json:"ip_address"`
 }
 
 func NewDockerInfrastructureData(m Manifest) (InfrastructureData, error) {
-	netAddress := dockerIPv4CIDR
-	if m.IPv6 {
-		netAddress = dockerIPv6CIDR
-	}
-	_, ipNet, err := net.ParseCIDR(netAddress)
-	if err != nil {
-		return InfrastructureData{}, fmt.Errorf("invalid IP network address %q: %w", netAddress, err)
-	}
-	ipGen := newIPGenerator(ipNet)
-	ifd := InfrastructureData{
-		Provider:  "docker",
-		Instances: make(map[string]InstanceData),
-		Network:   netAddress,
-	}
-	for name := range m.Nodes {
-		ifd.Instances[name] = InstanceData{
-			IPAddress: ipGen.Next(),
-		}
-	}
-	return ifd, nil
+    netAddress := selectNetworkAddress(m.IPv6)
+    ipNet, err := parseNetwork(netAddress)
+    if err != nil {
+        return InfrastructureData{}, err
+    }
+
+    instances, err := allocateInstances(m.Nodes, ipNet)
+    if err != nil {
+        return InfrastructureData{}, fmt.Errorf("failed to allocate instances: %w", err)
+    }
+
+    return InfrastructureData{
+        Provider:  "docker",
+        Instances: instances,
+        Network:   netAddress,
+    }, nil
 }
 
-func InfrastructureDataFromFile(p string) (InfrastructureData, error) {
-	ifd := InfrastructureData{}
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return InfrastructureData{}, err
-	}
-	err = json.Unmarshal(b, &ifd)
-	if err != nil {
-		return InfrastructureData{}, err
-	}
-	if ifd.Network == "" {
-		ifd.Network = globalIPv4CIDR
-	}
-	return ifd, nil
+func InfrastructureDataFromFile(path string) (InfrastructureData, error) {
+    data, err := os.ReadFile(path)
+    if err != nil {
+        return InfrastructureData{}, fmt.Errorf("failed to read infrastructure data: %w", err)
+    }
+
+    var ifd InfrastructureData
+    if err := json.Unmarshal(data, &ifd); err != nil {
+        return InfrastructureData{}, fmt.Errorf("failed to parse infrastructure data: %w", err)
+    }
+
+    if err := validateInfrastructureData(&ifd); err != nil {
+        return InfrastructureData{}, err
+    }
+
+    return ifd, nil
+}
+
+// Helper functions
+
+func selectNetworkAddress(useIPv6 bool) string {
+    if useIPv6 {
+        return dockerIPv6CIDR
+    }
+    return dockerIPv4CIDR
+}
+
+func parseNetwork(netAddress string) (*net.IPNet, error) {
+    _, ipNet, err := net.ParseCIDR(netAddress)
+    if err != nil {
+        return nil, fmt.Errorf("invalid network address %q: %w", netAddress, err)
+    }
+    return ipNet, nil
+}
+
+func allocateInstances(nodes map[string]*ManifestNode, ipNet *net.IPNet) (map[string]InstanceData, error) {
+    ipGen := newIPGenerator(ipNet)
+    instances := make(map[string]InstanceData, len(nodes))
+
+    for name := range nodes {
+        ip := ipGen.Next()
+        if ip == nil {
+            return nil, fmt.Errorf("IP address space exhausted at node %s", name)
+        }
+        
+        instances[name] = InstanceData{
+            IPAddress: ip,
+        }
+    }
+
+    return instances, nil
+}
+
+func validateInfrastructureData(ifd *InfrastructureData) error {
+    if ifd.Provider == "" {
+        return fmt.Errorf("provider cannot be empty")
+    }
+
+    if len(ifd.Instances) == 0 {
+        return fmt.Errorf("no instances specified")
+    }
+
+    if ifd.Network == "" {
+        ifd.Network = globalIPv4CIDR
+    }
+
+    // Validate network range
+    if _, _, err := net.ParseCIDR(ifd.Network); err != nil {
+        return fmt.Errorf("invalid network CIDR: %w", err)
+    }
+
+    // Validate instance IP addresses
+    for name, instance := range ifd.Instances {
+        if instance.IPAddress == nil {
+            return fmt.Errorf("invalid IP address for instance %s", name)
+        }
+    }
+
+    return nil
+}
+
+// IPGenerator implementation
+type ipGenerator struct {
+    network *net.IPNet
+    nextIP  net.IP
+}
+
+func newIPGenerator(network *net.IPNet) *ipGenerator {
+    nextIP := make(net.IP, len(network.IP))
+    copy(nextIP, network.IP)
+    
+    gen := &ipGenerator{
+        network: network,
+        nextIP:  nextIP,
+    }
+    
+    // Skip network and gateway addresses
+    gen.Next()
+    gen.Next()
+    
+    return gen
+}
+
+func (g *ipGenerator) Next() net.IP {
+    if g.nextIP == nil {
+        return nil
+    }
+
+    ip := make(net.IP, len(g.nextIP))
+    copy(ip, g.nextIP)
+
+    // Increment IP address
+    for i := len(g.nextIP) - 1; i >= 0; i-- {
+        g.nextIP[i]++
+        if g.nextIP[i] != 0 {
+            break
+        }
+        if i == 0 {
+            g.nextIP = nil
+            break
+        }
+    }
+
+    if g.nextIP != nil && !g.network.Contains(g.nextIP) {
+        g.nextIP = nil
+    }
+
+    return ip
 }
