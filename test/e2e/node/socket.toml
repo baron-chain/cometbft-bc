@@ -1,79 +1,160 @@
-#BC GEN TEST - #1023811F
-# Application Configuration
-# Last updated: 2024-11-11
+#----------------------------------------
+# Baron Chain Application Configuration
+# Version: 1.0.0
+# Updated: 2024-11-13
+#----------------------------------------
 
 #----------------------------------------
 # Core Settings
 #----------------------------------------
-chain_id = "test-chain"
-protocol = "socket"  # Options: socket, builtin
+chain_id = "baron-test-chain"
+version = "v1.0.0"
+protocol = "socket"  # Options: socket, builtin, grpc
 environment = "development"  # Options: development, test, production
+initial_height = 1
 
 #----------------------------------------
 # Network Settings
 #----------------------------------------
 [network]
-listen = "tcp://127.0.0.1:26658"
+listen_address = "tcp://0.0.0.0:26658"
 max_connections = 100
-read_timeout = 5  # seconds
-write_timeout = 5  # seconds
+max_incoming_connections = 40
+max_outgoing_connections = 10
+handshake_timeout = 20  # seconds
+dial_timeout = 3        # seconds
+read_timeout = 5        # seconds
+write_timeout = 5       # seconds
 keep_alive = true
+grpc_max_open_connections = 900
+
+#----------------------------------------
+# Blockchain Settings
+#----------------------------------------
+[blockchain]
+# Block configuration
+max_block_size = "21MB"
+max_evidence_size = "1MB"
+block_time = 1000      # milliseconds
+commit_timeout = 1000  # milliseconds
+
+# Consensus configuration
+consensus_timeout_propose = 3000    # milliseconds
+consensus_timeout_prevote = 1000    # milliseconds
+consensus_timeout_precommit = 1000  # milliseconds
+consensus_timeout_commit = 1000     # milliseconds
+
+#----------------------------------------
+# Quantum-Safe Cryptography
+#----------------------------------------
+[crypto]
+key_type = "kyber"     # Options: kyber, dilithium, falcon
+signature_scheme = "dilithium"
+encryption_enabled = true
+quantum_safe = true
 
 #----------------------------------------
 # State Management
 #----------------------------------------
 [state]
 # Snapshot configuration
-snapshot_interval = 100  # Blocks between snapshots
-snapshot_retention = 5   # Number of snapshots to retain
+snapshot_interval = 100        # Blocks between snapshots
+snapshot_retention = 5         # Number of snapshots to retain
 snapshot_compression = true
+snapshot_format = "proto"      # Options: proto, json
 
 # Persistence configuration
-persist_interval = 1  # Blocks between state persistence
-persist_mode = "full"  # Options: full, pruned
+persist_interval = 1           # Blocks between state persistence
+persist_mode = "full"         # Options: full, pruned
+state_sync_enabled = true
+max_state_history = 100000
 
 #----------------------------------------
 # Database
 #----------------------------------------
 [database]
-engine = "goleveldb"  # Options: goleveldb, badgerdb, rocksdb
-path = "data/app.db"
-cache_size = "100MB"
+engine = "goleveldb"          # Options: goleveldb, badgerdb, rocksdb
+path = "data/baronchain.db"
+cache_size = "1GB"
+compression = true
+max_open_files = 1000
+sync_writes = true
 
 #----------------------------------------
 # Logging
 #----------------------------------------
 [log]
-level = "info"    # Options: debug, info, warn, error
-format = "json"   # Options: json, text
-file = "logs/app.log"
+level = "info"               # Options: debug, info, warn, error
+format = "json"             # Options: json, text
+file = "logs/baronchain.log"
+max_size = "100MB"
+max_age = 7                 # days
+max_backups = 10
+compress_backups = true
 
 #----------------------------------------
-# Metrics
+# Metrics & Monitoring
 #----------------------------------------
 [metrics]
 enabled = true
 prometheus = true
-prometheus_listen = "127.0.0.1:26660"
-collection_interval = 10  # seconds
+prometheus_listen = "0.0.0.0:26660"
+collection_interval = 10     # seconds
+retention_days = 30
+detailed_metrics = true
 
 #----------------------------------------
 # Security
 #----------------------------------------
 [security]
-max_body_size = "1MB"
+max_body_size = "5MB"
 tls_enabled = false
-# TLS configuration (if enabled)
-#tls_cert_file = "config/cert.pem"
-#tls_key_file = "config/key.pem"
+rate_limit = 1000           # requests per second
+max_evidence_age = 100000   # blocks
+max_evidence_bytes = "5MB"
+double_sign_check_height = 100
+
+# Firewall configuration
+[security.firewall]
+enabled = true
+max_connections_per_ip = 3
+whitelist = []
+blacklist = []
 
 #----------------------------------------
 # Performance
 #----------------------------------------
 [performance]
-max_goroutines = 1000
-max_memory = "2GB"
-gc_interval = 600  # seconds
+max_goroutines = 10000
+max_memory = "4GB"
+gc_interval = 600           # seconds
+mempool_size = 5000
+mempool_cache = "2GB"
+cache_size = "1GB"
+
+#----------------------------------------
+# ABCI Configuration
+#----------------------------------------
+[abci]
+protocol = "socket"         # Options: socket, builtin, grpc
+listen_address = "tcp://0.0.0.0:26658"
+max_packet_size = "10MB"
+prepare_proposal_delay = 100  # milliseconds
+process_proposal_delay = 100  # milliseconds
+check_tx_delay = 100         # milliseconds
+
+#----------------------------------------
+# P2P Configuration
+#----------------------------------------
+[p2p]
+laddr = "tcp://0.0.0.0:26656"
+external_address = ""
+seeds = []
+persistent_peers = []
+unconditional_peer_ids = []
+max_packet_msg_payload_size = "10MB"
+send_rate = 5120000         # bytes/sec
+recv_rate = 5120000         # bytes/sec
 
 #----------------------------------------
 # Development
@@ -82,19 +163,33 @@ gc_interval = 600  # seconds
 debug = false
 profile = false
 trace = false
+test_mode = false
+mock_pvss = false
 
 #----------------------------------------
 # Advanced Settings
 #----------------------------------------
 [advanced]
 # Retry configuration
-max_retries = 3
-retry_delay = 1000  # milliseconds
+max_retries = 5
+retry_delay = 1000          # milliseconds
+shutdown_timeout = 30       # seconds
+startup_timeout = 30        # seconds
 
 # Buffer sizes
-read_buffer = "64KB"
-write_buffer = "64KB"
+read_buffer = "1MB"
+write_buffer = "1MB"
+grpc_max_recv_msg_size = "10MB"
+grpc_max_send_msg_size = "10MB"
 
-# Timeouts
-shutdown_timeout = 30  # seconds
-startup_timeout = 30   # seconds
+# Custom chaincode settings
+[advanced.chaincode]
+execution_timeout = 30      # seconds
+deployment_timeout = 60     # seconds
+startup_timeout = 30        # seconds
+
+# Validator settings
+[advanced.validator]
+min_stake = "100000BARON"
+max_validators = 100
+validator_timeout = 30      # seconds
