@@ -1,21 +1,35 @@
-#BC GEN TEST - #1023811F
-
-# This testnet is run by CI, and attempts to cover a broad range of
-# functionality with a single network.
+#----------------------------------------
+# Baron Chain Testnet Configuration
+# Version: v1.0.0
+# Last Updated: 2024-11-13
+#----------------------------------------
 
 ipv6 = true
 initial_height = 1000
 evidence = 5
-initial_state = { initial01 = "a", initial02 = "b", initial03 = "c" }
+abci_protocol = "builtin"
 prepare_proposal_delay = "100ms"
 process_proposal_delay = "100ms"
 check_tx_delay = "0ms"
-# The most common case (e.g. Cosmos SDK-based chains).
-abci_protocol = "builtin"
+key_type = "kyber"
 
+#----------------------------------------
+# Initial State
+#----------------------------------------
+[initial_state]
+initial01 = "a"
+initial02 = "b"
+initial03 = "c"
+
+#----------------------------------------
+# Initial Validators
+#----------------------------------------
 [validators]
 validator01 = 100
 
+#----------------------------------------
+# Validator Updates
+#----------------------------------------
 [validator_update.0]
 validator01 = 10
 validator02 = 20
@@ -25,7 +39,6 @@ validator04 = 40
 [validator_update.1010]
 validator05 = 50
 
-# validator03 gets killed and validator05 has lots of perturbations, so weight them low.
 [validator_update.1020]
 validator01 = 100
 validator02 = 100
@@ -33,66 +46,152 @@ validator03 = 50
 validator04 = 100
 validator05 = 50
 
+#----------------------------------------
+# Seed Node
+#----------------------------------------
 [node.seed01]
 mode = "seed"
 perturb = ["restart"]
+version = "baron-chain/node:v1.0.0"
+key_type = "kyber"
+prometheus = true
 
+#----------------------------------------
+# Validator Nodes
+#----------------------------------------
 [node.validator01]
+mode = "validator"
 seeds = ["seed01"]
 snapshot_interval = 5
 perturb = ["disconnect"]
+version = "baron-chain/node:v1.0.0"
+key_type = "kyber"
+prometheus = true
+privval_protocol = "tcp"
+database = "goleveldb"
 
 [node.validator02]
+mode = "validator"
 seeds = ["seed01"]
 database = "boltdb"
 privval_protocol = "tcp"
 persist_interval = 0
 perturb = ["restart"]
+version = "baron-chain/node:v1.0.0"
+key_type = "kyber"
+prometheus = true
 
 [node.validator03]
+mode = "validator"
 seeds = ["seed01"]
 database = "badgerdb"
 privval_protocol = "unix"
 persist_interval = 3
 retain_blocks = 10
 perturb = ["kill"]
+version = "baron-chain/node:v1.0.0"
+key_type = "kyber"
+prometheus = true
 
 [node.validator04]
+mode = "validator"
 persistent_peers = ["validator01"]
 database = "rocksdb"
 perturb = ["pause"]
+version = "baron-chain/node:v1.0.0"
+key_type = "kyber"
+prometheus = true
+privval_protocol = "tcp"
 
 [node.validator05]
-block_sync = "v0" 
-start_at = 1005 # Becomes part of the validator set at 1010
+mode = "validator"
+block_sync = "v0"
+start_at = 1005
 persistent_peers = ["validator01", "full01"]
 database = "cleveldb"
 mempool_version = "v1"
 privval_protocol = "tcp"
 perturb = ["kill", "pause", "disconnect", "restart"]
+version = "baron-chain/node:v1.0.0"
+key_type = "kyber"
+prometheus = true
 
+#----------------------------------------
+# Full Nodes
+#----------------------------------------
 [node.full01]
-start_at = 1010
 mode = "full"
+start_at = 1010
 block_sync = "v0"
 persistent_peers = ["validator01", "validator02", "validator03", "validator04", "validator05"]
 retain_blocks = 10
 perturb = ["restart"]
+version = "baron-chain/node:v1.0.0"
+key_type = "kyber"
+prometheus = true
+database = "goleveldb"
 
 [node.full02]
-start_at = 1015
 mode = "full"
+start_at = 1015
 block_sync = "v0"
 state_sync = true
 seeds = ["seed01"]
 perturb = ["restart"]
+version = "baron-chain/node:v1.0.0"
+key_type = "kyber"
+prometheus = true
+database = "goleveldb"
 
+#----------------------------------------
+# Light Nodes
+#----------------------------------------
 [node.light01]
-mode= "light"
-start_at= 1005
+mode = "light"
+start_at = 1005
 persistent_peers = ["validator01", "validator02", "validator03"]
+version = "baron-chain/node:v1.0.0"
+key_type = "kyber"
+prometheus = true
 
 [node.light02]
-mode= "light"
-start_at= 1015
+mode = "light"
+start_at = 1015
 persistent_peers = ["validator04", "full01", "validator05"]
+version = "baron-chain/node:v1.0.0"
+key_type = "kyber"
+prometheus = true
+
+#----------------------------------------
+# Network Settings
+#----------------------------------------
+[network]
+max_connections = 100
+handshake_timeout = "20s"
+dial_timeout = "3s"
+
+#----------------------------------------
+# Metrics Settings
+#----------------------------------------
+[metrics]
+enabled = true
+prometheus = true
+prometheus_retention = "30d"
+collection_interval = "10s"
+
+#----------------------------------------
+# Security Settings
+#----------------------------------------
+[security]
+double_sign_check_height = 100
+min_gas_price = "0.001BARON"
+max_connections_per_ip = 3
+
+#----------------------------------------
+# Performance Settings
+#----------------------------------------
+[performance]
+max_txs_per_block = 10000
+max_block_size = "21MB"
+mempool_size = 5000
+mempool_cache = "2GB"
