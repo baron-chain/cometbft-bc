@@ -1,258 +1,261 @@
-// Package docker provides a Docker Compose-based infrastructure provider for testnets.
 package docker
 
 import (
-	"bytes"
-	"context"
-	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"text/template"
-	"time"
+    "bytes"
+    "context"
+    "fmt"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "text/template"
+    "time"
 
-	e2e "github.com/cometbft/cometbft/test/e2e/pkg"
-	"github.com/cometbft/cometbft/test/e2e/pkg/infra"
+    e2e "github.com/baron-chain/cometbft-bc/test/e2e/pkg"
+    "github.com/baron-chain/cometbft-bc/test/e2e/pkg/infra"
 )
 
 const (
-	// Default file permissions for generated files
-	defaultFilePerms = 0644
-	
-	// Composition file name
-	composeFileName = "docker-compose.yml"
-	
-	// Default network subnet
-	defaultSubnet = "172.57.0.0/16"
-	
-	// Default timeout for Docker operations
-	defaultTimeout = 30 * time.Second
+    defaultFilePerms = 0644
+    composeFileName = "docker-compose.yml"
+    defaultSubnet = "172.57.0.0/16"
+    defaultTimeout = 30 * time.Second
+    
+    // Baron Chain specific constants
+    baronNetworkName = "baron-network"
+    defaultNodeImage = "baron-chain/node:latest"
+    metricsPort = 26660
+    p2pPort = 26656
+    rpcPort = 26657
 )
 
-// DockerConfig contains Docker-specific configuration options
 type DockerConfig struct {
-	// ComposeVersion specifies the Docker Compose file version
-	ComposeVersion string
-	// NetworkDriver specifies the Docker network driver
-	NetworkDriver string
-	// IPAMDriver specifies the IPAM driver
-	IPAMDriver string
-	// Subnet specifies the network subnet
-	Subnet string
-	// Labels contains Docker resource labels
-	Labels map[string]string
+    ComposeVersion string
+    NetworkDriver string
+    IPAMDriver string
+    Subnet string
+    Labels map[string]string
+    
+    // Baron Chain specific configs
+    NodeImage string
+    EnableMetrics bool
+    EnablePersistence bool
+    PersistPath string
+    ValidatorSetSize int
 }
 
-// Provider implements a Docker Compose-backed infrastructure provider.
 type Provider struct {
-	*infra.BaseProvider
-	Testnet *e2e.Testnet
-	Config  *DockerConfig
+    *infra.BaseProvider
+    Testnet *e2e.Testnet
+    Config *DockerConfig
 }
 
-// NewProvider creates a new Docker provider instance.
 func NewProvider(testnet *e2e.Testnet, cfg *DockerConfig) *Provider {
-	if cfg == nil {
-		cfg = defaultConfig()
-	}
-	return &Provider{
-		BaseProvider: infra.NewBaseProvider(&infra.Config{
-			Timeout:    defaultTimeout,
-			RetryCount: 3,
-			Tags:       cfg.Labels,
-		}),
-		Testnet: testnet,
-		Config:  cfg,
-	}
+    if cfg == nil {
+        cfg = defaultConfig()
+    }
+    return &Provider{
+        BaseProvider: infra.NewBaseProvider(&infra.Config{
+            Timeout: defaultTimeout,
+            RetryCount: 3,
+            Tags: cfg.Labels,
+        }),
+        Testnet: testnet,
+        Config: cfg,
+    }
 }
 
-// defaultConfig returns the default Docker configuration.
 func defaultConfig() *DockerConfig {
-	return &DockerConfig{
-		ComposeVersion: "2.4",
-		NetworkDriver:  "bridge",
-		IPAMDriver:    "default",
-		Subnet:        defaultSubnet,
-		Labels: map[string]string{
-			"e2e": "true",
-		},
-	}
+    return &DockerConfig{
+        ComposeVersion: "3.8",
+        NetworkDriver: "bridge",
+        IPAMDriver: "default",
+        Subnet: defaultSubnet,
+        NodeImage: defaultNodeImage,
+        EnableMetrics: true,
+        EnablePersistence: true,
+        PersistPath: "/data",
+        ValidatorSetSize: 4,
+        Labels: map[string]string{
+            "network": baronNetworkName,
+            "chain": "baron",
+        },
+    }
 }
 
-// Setup implements infra.Provider.
 func (p *Provider) Setup(ctx context.Context) error {
-	// Generate Docker Compose config
-	compose, err := p.generateComposeConfig()
-	if err != nil {
-		return fmt.Errorf("failed to generate compose config: %w", err)
-	}
+    compose, err := p.generateComposeConfig()
+    if err != nil {
+        return fmt.Errorf("failed to generate docker compose config: %w", err)
+    }
 
-	// Write config to file
-	composePath := filepath.Join(p.Testnet.Dir, composeFileName)
-	if err := os.WriteFile(composePath, compose, defaultFilePerms); err != nil {
-		return fmt.Errorf("failed to write compose file: %w", err)
-	}
+    composePath := filepath.Join(p.Testnet.Dir, composeFileName)
+    if err := os.WriteFile(composePath, compose, defaultFilePerms); err != nil {
+        return fmt.Errorf("failed to write compose file: %w", err)
+    }
 
-	// Start the containers
-	return p.startContainers(ctx)
+    if err := p.startContainers(ctx); err != nil {
+        return fmt.Errorf("failed to start containers: %w", err)
+    }
+
+    return p.waitForHealthy(ctx)
 }
 
-// Teardown implements infra.Provider.
 func (p *Provider) Teardown(ctx context.Context) error {
-	return p.stopContainers(ctx)
+    if err := p.stopContainers(ctx); err != nil {
+        return fmt.Errorf("failed to stop containers: %w", err)
+    }
+    return p.cleanup(ctx)
 }
 
-// Status implements infra.Provider.
 func (p *Provider) Status(ctx context.Context) (infra.Status, error) {
-	if err := p.checkContainers(ctx); err != nil {
-		return infra.StatusError, err
-	}
-	return infra.StatusReady, nil
+    healthy, err := p.checkHealth(ctx)
+    if err != nil {
+        return infra.StatusError, err
+    }
+    if !healthy {
+        return infra.StatusError, fmt.Errorf("network unhealthy")
+    }
+    return infra.StatusReady, nil
 }
 
-// GetMetrics implements infra.Provider.
 func (p *Provider) GetMetrics(ctx context.Context) (*infra.ResourceMetrics, error) {
-	stats, err := p.collectContainerStats(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return stats, nil
+    return p.collectMetrics(ctx)
 }
 
-// IsHealthy implements infra.Provider.
 func (p *Provider) IsHealthy(ctx context.Context) bool {
-	status, _ := p.Status(ctx)
-	return status == infra.StatusReady
+    healthy, _ := p.checkHealth(ctx)
+    return healthy
 }
 
-// generateComposeConfig generates the Docker Compose configuration.
+// Helper functions
+
 func (p *Provider) generateComposeConfig() ([]byte, error) {
-	tmpl, err := template.New("docker-compose").Parse(composeTemplate)
-	if err != nil {
-		return nil, err
-	}
+    tmpl, err := template.New("docker-compose").Parse(composeTemplate)
+    if err != nil {
+        return nil, err
+    }
 
-	data := struct {
-		*e2e.Testnet
-		Config *DockerConfig
-	}{
-		Testnet: p.Testnet,
-		Config:  p.Config,
-	}
+    data := struct {
+        *e2e.Testnet
+        Config *DockerConfig
+    }{
+        Testnet: p.Testnet,
+        Config: p.Config,
+    }
 
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+    var buf bytes.Buffer
+    if err := tmpl.Execute(&buf, data); err != nil {
+        return nil, err
+    }
+    return buf.Bytes(), nil
 }
 
-// startContainers starts the Docker containers.
 func (p *Provider) startContainers(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "docker-compose", "-f", 
-		filepath.Join(p.Testnet.Dir, composeFileName), "up", "-d")
-	return cmd.Run()
+    cmd := exec.CommandContext(ctx, "docker-compose", "-f",
+        filepath.Join(p.Testnet.Dir, composeFileName), "up", "-d")
+    cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+baronNetworkName)
+    return cmd.Run()
 }
 
-// stopContainers stops and removes the Docker containers.
 func (p *Provider) stopContainers(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "docker-compose", "-f",
-		filepath.Join(p.Testnet.Dir, composeFileName), "down", "--volumes")
-	return cmd.Run()
+    cmd := exec.CommandContext(ctx, "docker-compose", "-f",
+        filepath.Join(p.Testnet.Dir, composeFileName), "down", "--volumes", "--remove-orphans")
+    cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+baronNetworkName)
+    return cmd.Run()
 }
 
-// checkContainers verifies all containers are running.
-func (p *Provider) checkContainers(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "docker-compose", "-f",
-		filepath.Join(p.Testnet.Dir, composeFileName), "ps", "-q")
-	output, err := cmd.Output()
-	if err != nil {
-		return err
-	}
-	if len(output) == 0 {
-		return fmt.Errorf("no containers running")
-	}
-	return nil
+func (p *Provider) checkHealth(ctx context.Context) (bool, error) {
+    cmd := exec.CommandContext(ctx, "docker-compose", "-f",
+        filepath.Join(p.Testnet.Dir, composeFileName), "ps", "--format", "json")
+    
+    output, err := cmd.Output()
+    if err != nil {
+        return false, err
+    }
+
+    return len(output) > 0, nil
 }
 
-// collectContainerStats collects resource usage metrics from containers.
-func (p *Provider) collectContainerStats(ctx context.Context) (*infra.ResourceMetrics, error) {
-	// Implementation for collecting Docker stats
-	// This would use Docker API to get container statistics
-	return &infra.ResourceMetrics{}, nil
+func (p *Provider) collectMetrics(ctx context.Context) (*infra.ResourceMetrics, error) {
+    metrics := &infra.ResourceMetrics{}
+    
+    // Collect container stats using Docker API
+    for _, node := range p.Testnet.Nodes {
+        stats, err := p.getContainerStats(ctx, node.Name)
+        if err != nil {
+            continue
+        }
+        metrics.CPUUsage += stats.CPUUsage
+        metrics.MemoryUsage += stats.MemoryUsage
+    }
+
+    return metrics, nil
 }
 
-// Docker Compose template
-const composeTemplate = ` + "`" + `version: '{{ .Config.ComposeVersion }}'
+func (p *Provider) waitForHealthy(ctx context.Context) error {
+    ticker := time.NewTicker(time.Second)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        case <-ticker.C:
+            if healthy, _ := p.checkHealth(ctx); healthy {
+                return nil
+            }
+        }
+    }
+}
+
+func (p *Provider) cleanup(ctx context.Context) error {
+    return os.RemoveAll(p.Testnet.Dir)
+}
+
+// Docker compose template with improved formatting and Baron Chain specifics
+const composeTemplate = `version: '{{ .Config.ComposeVersion }}'
+
 networks:
   {{ .Name }}:
+    name: {{ .Name }}
+    driver: {{ .Config.NetworkDriver }}
+    ipam:
+      driver: {{ .Config.IPAMDriver }}
+      config:
+        - subnet: {{ .Config.Subnet }}
     labels:
       {{- range $key, $value := .Config.Labels }}
       {{ $key }}: {{ $value }}
       {{- end }}
-    driver: {{ .Config.NetworkDriver }}
-{{- if .IPv6 }}
-    enable_ipv6: true
-{{- end }}
-    ipam:
-      driver: {{ .Config.IPAMDriver }}
-      config:
-      - subnet: {{ or .IP .Config.Subnet }}
 
 services:
 {{- range .Nodes }}
   {{ .Name }}:
-    labels:
-      {{- range $key, $value := $.Config.Labels }}
-      {{ $key }}: {{ $value }}
-      {{- end }}
     container_name: {{ .Name }}
-    image: {{ .Version }}
-{{- if or (eq .ABCIProtocol "builtin") (eq .ABCIProtocol "builtin_unsync") }}
-    entrypoint: /usr/bin/entrypoint-builtin
-{{- end }}
-    init: true
-    ports:
-    - 26656
-    - {{ if .ProxyPort }}{{ .ProxyPort }}:{{ end }}26657
-{{- if .PrometheusProxyPort }}
-    - {{ .PrometheusProxyPort }}:26660
-{{- end }}
-    - 6060
-    volumes:
-    - ./{{ .Name }}:/cometbft
-    - ./{{ .Name }}:/tendermint
+    image: {{ $.Config.NodeImage }}
     networks:
       {{ $.Name }}:
-        ipv{{ if $.IPv6 }}6{{ else }}4{{ end}}_address: {{ .IP }}
-
-{{- if ne .Version $.UpgradeVersion}}
-  {{ .Name }}_u:
-    labels:
-      {{- range $key, $value := $.Config.Labels }}
-      {{ $key }}: {{ $value }}
+        ipv4_address: {{ .IP }}
+    volumes:
+      - {{ $.Config.PersistPath }}/{{ .Name }}:/data
+    ports:
+      - "{{ .ProxyPort }}:{{ rpcPort }}"
+      {{- if $.Config.EnableMetrics }}
+      - "{{ .PrometheusProxyPort }}:{{ metricsPort }}"
       {{- end }}
-    container_name: {{ .Name }}_u
-    image: {{ $.UpgradeVersion }}
-{{- if or (eq .ABCIProtocol "builtin") (eq .ABCIProtocol "builtin_unsync") }}
-    entrypoint: /usr/bin/entrypoint-builtin
+    environment:
+      - BARON_HOME=/data
+      - BARON_CHAIN_ID={{ $.Name }}
+      {{- if eq .Mode "validator" }}
+      - BARON_VALIDATOR=true
+      {{- end }}
+    command: start
+    healthcheck:
+      test: ["CMD", "baron", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 {{- end }}
-    init: true
-    ports:
-    - 26656
-    - {{ if .ProxyPort }}{{ .ProxyPort }}:{{ end }}26657
-{{- if .PrometheusProxyPort }}
-    - {{ .PrometheusProxyPort }}:26660
-{{- end }}
-    - 6060
-    volumes:
-    - ./{{ .Name }}:/cometbft
-    - ./{{ .Name }}:/tendermint
-    networks:
-      {{ $.Name }}:
-        ipv{{ if $.IPv6 }}6{{ else }}4{{ end}}_address: {{ .IP }}
-{{- end }}
-{{- end }}` + "`" + `
+`
 
-// Ensure Provider implements the interface
 var _ infra.Provider = &Provider{}
