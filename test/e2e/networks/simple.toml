@@ -1,5 +1,179 @@
-#BC GEN TEST - #1023811F
+#----------------------------------------
+# Baron Chain Validator Nodes Configuration
+# Version: v1.0.0
+# Last Updated: 2024-11-13
+#----------------------------------------
+
+#----------------------------------------
+# Validator 01 - Primary Validator
+#----------------------------------------
 [node.validator01]
+name = "baron-validator-01"
+mode = "validator"
+moniker = "Baron Primary Validator"
+power = 100
+commission_rate = 0.10
+commission_max_rate = 0.20
+commission_max_change = 0.01
+min_self_delegation = "100000BARON"
+
+[node.validator01.keys]
+type = "kyber"
+encryption = "kyber-1024"
+signing = "dilithium-3"
+hash = "sha3-256"
+priv_key_file = "config/val01/priv_validator_key.json"
+state_file = "data/val01/priv_validator_state.json"
+
+[node.validator01.network]
+listen_addr = "tcp://0.0.0.0:26656"
+rpc_addr = "tcp://0.0.0.0:26657"
+prometheus_addr = "0.0.0.0:26660"
+external_address = ""
+persistent_peers = ["validator02", "validator03", "validator04"]
+
+[node.validator01.performance]
+max_txs_in_proposal = 10000
+mempool_size = 5000
+mempool_cache = "2GB"
+state_cache = "1GB"
+
+#----------------------------------------
+# Validator 02 - Secondary Validator
+#----------------------------------------
 [node.validator02]
+name = "baron-validator-02"
+mode = "validator"
+moniker = "Baron Secondary Validator"
+power = 75
+commission_rate = 0.12
+commission_max_rate = 0.20
+commission_max_change = 0.01
+min_self_delegation = "100000BARON"
+
+[node.validator02.keys]
+type = "kyber"
+encryption = "kyber-1024"
+signing = "dilithium-3"
+hash = "sha3-256"
+priv_key_file = "config/val02/priv_validator_key.json"
+state_file = "data/val02/priv_validator_state.json"
+
+[node.validator02.network]
+listen_addr = "tcp://0.0.0.0:26666"
+rpc_addr = "tcp://0.0.0.0:26667"
+prometheus_addr = "0.0.0.0:26670"
+external_address = ""
+persistent_peers = ["validator01", "validator03", "validator04"]
+
+[node.validator02.performance]
+max_txs_in_proposal = 10000
+mempool_size = 5000
+mempool_cache = "2GB"
+state_cache = "1GB"
+
+#----------------------------------------
+# Validator 03 - Backup Validator
+#----------------------------------------
 [node.validator03]
+name = "baron-validator-03"
+mode = "validator"
+moniker = "Baron Backup Validator"
+power = 50
+commission_rate = 0.15
+commission_max_rate = 0.20
+commission_max_change = 0.01
+min_self_delegation = "100000BARON"
+
+[node.validator03.keys]
+type = "kyber"
+encryption = "kyber-1024"
+signing = "dilithium-3"
+hash = "sha3-256"
+priv_key_file = "config/val03/priv_validator_key.json"
+state_file = "data/val03/priv_validator_state.json"
+
+[node.validator03.network]
+listen_addr = "tcp://0.0.0.0:26676"
+rpc_addr = "tcp://0.0.0.0:26677"
+prometheus_addr = "0.0.0.0:26680"
+external_address = ""
+persistent_peers = ["validator01", "validator02", "validator04"]
+
+[node.validator03.performance]
+max_txs_in_proposal = 10000
+mempool_size = 5000
+mempool_cache = "2GB"
+state_cache = "1GB"
+
+#----------------------------------------
+# Validator 04 - Standby Validator
+#----------------------------------------
 [node.validator04]
+name = "baron-validator-04"
+mode = "validator"
+moniker = "Baron Standby Validator"
+power = 25
+commission_rate = 0.18
+commission_max_rate = 0.20
+commission_max_change = 0.01
+min_self_delegation = "100000BARON"
+
+[node.validator04.keys]
+type = "kyber"
+encryption = "kyber-1024"
+signing = "dilithium-3"
+hash = "sha3-256"
+priv_key_file = "config/val04/priv_validator_key.json"
+state_file = "data/val04/priv_validator_state.json"
+
+[node.validator04.network]
+listen_addr = "tcp://0.0.0.0:26686"
+rpc_addr = "tcp://0.0.0.0:26687"
+prometheus_addr = "0.0.0.0:26690"
+external_address = ""
+persistent_peers = ["validator01", "validator02", "validator03"]
+
+[node.validator04.performance]
+max_txs_in_proposal = 10000
+mempool_size = 5000
+mempool_cache = "2GB"
+state_cache = "1GB"
+
+#----------------------------------------
+# Shared Validator Settings
+#----------------------------------------
+[validator.consensus]
+timeout_propose = "3s"
+timeout_propose_delta = "500ms"
+timeout_prevote = "1s"
+timeout_prevote_delta = "500ms"
+timeout_precommit = "1s"
+timeout_precommit_delta = "500ms"
+timeout_commit = "1s"
+
+[validator.security]
+min_gas_price = "0.001BARON"
+max_connections = 100
+double_sign_protection = true
+jail_on_downtime = true
+jail_duration = "600s"
+
+[validator.state]
+persist_interval = 1
+snapshot_interval = 1000
+snapshot_retention = 10
+state_sync = true
+
+[validator.metrics]
+enabled = true
+detailed_metrics = true
+alert_on_downtime = true
+alert_on_double_sign = true
+
+[validator.log]
+level = "info"
+format = "json"
+path = "logs/validators.log"
+max_size = "100MB"
+max_backups = 10
