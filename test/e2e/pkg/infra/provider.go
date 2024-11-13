@@ -1,166 +1,200 @@
-// Package infra provides infrastructure management capabilities for testnets.
 package infra
 
 import (
-	"context"
-	"time"
+    "context"
+    "time"
 )
 
-// Status represents the current state of infrastructure resources.
 type Status string
 
 const (
-	// StatusUnknown indicates the infrastructure state cannot be determined.
-	StatusUnknown Status = "unknown"
-	// StatusReady indicates the infrastructure is ready for use.
-	StatusReady Status = "ready"
-	// StatusError indicates the infrastructure is in an error state.
-	StatusError Status = "error"
-	// StatusInProgress indicates the infrastructure is being modified.
-	StatusInProgress Status = "in_progress"
+    StatusUnknown Status = "unknown"
+    StatusReady Status = "ready"
+    StatusError Status = "error"
+    StatusInProgress Status = "in_progress"
+
+    defaultTimeout = 30 * time.Second
+    defaultRetryCount = 3
+    
+    // Baron Chain specific constants
+    minCPUThreshold = 10.0
+    maxCPUThreshold = 90.0
+    minMemoryThreshold = 10.0
+    maxMemoryThreshold = 90.0
+    minDiskThreshold = 10.0
+    maxDiskThreshold = 90.0
 )
 
-// Config holds provider configuration options.
 type Config struct {
-	// Timeout specifies the maximum duration for operations.
-	Timeout time.Duration
-	// RetryCount specifies the number of retry attempts for operations.
-	RetryCount int
-	// Tags contains provider-specific resource tags.
-	Tags map[string]string
+    Timeout time.Duration
+    RetryCount int
+    Tags map[string]string
+    
+    // Baron Chain specific configurations
+    QueueSize int
+    MaxConnections int
+    PersistInterval uint64
+    SnapshotInterval uint64
 }
 
-// ResourceMetrics contains infrastructure resource usage metrics.
 type ResourceMetrics struct {
-	// CPUUsage represents CPU utilization percentage.
-	CPUUsage float64
-	// MemoryUsage represents memory utilization percentage.
-	MemoryUsage float64
-	// DiskUsage represents disk utilization percentage.
-	DiskUsage float64
-	// NetworkIn represents incoming network traffic (bytes).
-	NetworkIn int64
-	// NetworkOut represents outgoing network traffic (bytes).
-	NetworkOut int64
+    CPUUsage float64
+    MemoryUsage float64
+    DiskUsage float64
+    NetworkIn int64
+    NetworkOut int64
+    
+    // Baron Chain specific metrics
+    ActiveValidators int
+    PendingTxs int
+    BlockHeight int64
+    ConsensusRound int
+    PeerCount int
 }
 
-// Provider defines an API for managing testnet infrastructure.
 type Provider interface {
-	// Setup generates necessary configuration and provisions infrastructure resources.
-	// Returns an error if setup fails.
-	Setup(ctx context.Context) error
-
-	// Teardown cleans up and releases infrastructure resources.
-	// Returns an error if cleanup fails.
-	Teardown(ctx context.Context) error
-
-	// Status returns the current state of the infrastructure.
-	Status(ctx context.Context) (Status, error)
-
-	// GetMetrics returns current resource usage metrics.
-	// Returns an error if metrics collection fails.
-	GetMetrics(ctx context.Context) (*ResourceMetrics, error)
-
-	// IsHealthy performs a health check of the infrastructure.
-	// Returns true if healthy, false otherwise.
-	IsHealthy(ctx context.Context) bool
-
-	// GetConfig returns the current provider configuration.
-	GetConfig() *Config
-
-	// UpdateConfig updates the provider configuration.
-	// Returns an error if update fails.
-	UpdateConfig(cfg *Config) error
+    Setup(ctx context.Context) error
+    Teardown(ctx context.Context) error
+    Status(ctx context.Context) (Status, error)
+    GetMetrics(ctx context.Context) (*ResourceMetrics, error)
+    IsHealthy(ctx context.Context) bool
+    GetConfig() *Config
+    UpdateConfig(cfg *Config) error
 }
 
-// BaseProvider implements common functionality for infrastructure providers.
 type BaseProvider struct {
-	config *Config
+    config *Config
+    metrics *ResourceMetrics
+    status Status
 }
 
-// NewBaseProvider creates a new BaseProvider with the given configuration.
 func NewBaseProvider(cfg *Config) *BaseProvider {
-	if cfg == nil {
-		cfg = &Config{
-			Timeout:    30 * time.Second,
-			RetryCount: 3,
-			Tags:      make(map[string]string),
-		}
-	}
-	return &BaseProvider{config: cfg}
+    if cfg == nil {
+        cfg = &Config{
+            Timeout: defaultTimeout,
+            RetryCount: defaultRetryCount,
+            Tags: make(map[string]string),
+            QueueSize: 100,
+            MaxConnections: 50,
+            PersistInterval: 1,
+            SnapshotInterval: 100,
+        }
+    }
+    
+    return &BaseProvider{
+        config: cfg,
+        metrics: &ResourceMetrics{},
+        status: StatusUnknown,
+    }
 }
 
-// GetConfig returns the current provider configuration.
 func (p *BaseProvider) GetConfig() *Config {
-	return p.config
+    return p.config
 }
 
-// UpdateConfig updates the provider configuration.
 func (p *BaseProvider) UpdateConfig(cfg *Config) error {
-	if cfg == nil {
-		return ErrInvalidConfig
-	}
-	p.config = cfg
-	return nil
+    if err := validateConfig(cfg); err != nil {
+        return err
+    }
+    p.config = cfg
+    return nil
 }
 
-// NoopProvider implements the Provider interface by performing no-ops.
-// This is useful when infrastructure is managed externally.
 type NoopProvider struct {
-	*BaseProvider
+    *BaseProvider
 }
 
-// NewNoopProvider creates a new NoopProvider instance.
 func NewNoopProvider(cfg *Config) *NoopProvider {
-	return &NoopProvider{
-		BaseProvider: NewBaseProvider(cfg),
-	}
+    return &NoopProvider{
+        BaseProvider: NewBaseProvider(cfg),
+    }
 }
 
-// Setup implements Provider.Setup as a no-op.
 func (p *NoopProvider) Setup(ctx context.Context) error {
-	return nil
+    return nil
 }
 
-// Teardown implements Provider.Teardown as a no-op.
 func (p *NoopProvider) Teardown(ctx context.Context) error {
-	return nil
+    return nil
 }
 
-// Status implements Provider.Status as a no-op.
 func (p *NoopProvider) Status(ctx context.Context) (Status, error) {
-	return StatusReady, nil
+    return StatusReady, nil
 }
 
-// GetMetrics implements Provider.GetMetrics as a no-op.
 func (p *NoopProvider) GetMetrics(ctx context.Context) (*ResourceMetrics, error) {
-	return &ResourceMetrics{}, nil
+    return &ResourceMetrics{}, nil
 }
 
-// IsHealthy implements Provider.IsHealthy as a no-op.
 func (p *NoopProvider) IsHealthy(ctx context.Context) bool {
-	return true
+    return true
 }
 
-// Common errors returned by providers.
+type Error struct {
+    msg string
+    code int
+}
+
+func NewError(msg string, code int) *Error {
+    return &Error{
+        msg: msg,
+        code: code,
+    }
+}
+
+func (e *Error) Error() string {
+    return e.msg
+}
+
+func (e *Error) Code() int {
+    return e.code
+}
+
 var (
-	ErrInvalidConfig      = New("invalid configuration")
-	ErrProvisionFailed    = New("failed to provision resources")
-	ErrCleanupFailed      = New("failed to cleanup resources")
-	ErrMetricsUnavailable = New("metrics unavailable")
+    ErrInvalidConfig = NewError("invalid configuration", 1)
+    ErrProvisionFailed = NewError("failed to provision resources", 2)
+    ErrCleanupFailed = NewError("failed to cleanup resources", 3) 
+    ErrMetricsUnavailable = NewError("metrics unavailable", 4)
 )
 
-// Error represents an infrastructure provider error.
-type Error struct {
-	msg string
+// Helper functions
+
+func validateConfig(cfg *Config) error {
+    if cfg == nil {
+        return ErrInvalidConfig
+    }
+
+    if cfg.Timeout < time.Second {
+        return NewError("timeout must be at least 1 second", 5)
+    }
+
+    if cfg.RetryCount < 0 {
+        return NewError("retry count cannot be negative", 6)
+    }
+
+    if cfg.QueueSize < 1 {
+        return NewError("queue size must be positive", 7)
+    }
+
+    if cfg.MaxConnections < 1 {
+        return NewError("max connections must be positive", 8)
+    }
+
+    return nil
 }
 
-// New creates a new Error instance.
-func New(msg string) error {
-	return &Error{msg: msg}
+func isMetricHealthy(value float64, min, max float64) bool {
+    return value >= min && value <= max
 }
 
-// Error implements the error interface.
-func (e *Error) Error() string {
-	return e.msg
+func (p *BaseProvider) checkHealth() bool {
+    if p.metrics == nil {
+        return false
+    }
+
+    return isMetricHealthy(p.metrics.CPUUsage, minCPUThreshold, maxCPUThreshold) &&
+           isMetricHealthy(p.metrics.MemoryUsage, minMemoryThreshold, maxMemoryThreshold) &&
+           isMetricHealthy(p.metrics.DiskUsage, minDiskThreshold, maxDiskThreshold) &&
+           p.metrics.PeerCount > 0 &&
+           p.metrics.ActiveValidators > 0
 }
