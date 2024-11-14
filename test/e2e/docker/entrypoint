@@ -1,10 +1,127 @@
 #!/usr/bin/env bash
 
-# Forcibly remove any stray UNIX sockets left behind from previous runs
-rm -rf /var/run/privval.sock /var/run/app.sock
+set -euo pipefail
 
-/usr/bin/app /cometbft/config/app.toml &
+# Script constants
+BARON_SOCK_DIR="/var/run/baron"
+PRIVVAL_SOCK="${BARON_SOCK_DIR}/privval.sock"
+APP_SOCK="${BARON_SOCK_DIR}/app.sock"
+BARON_CONFIG="/baron-chain/config"
+APP_CONFIG="${BARON_CONFIG}/app.toml"
+APP_BINARY="/usr/bin/baron-app"
+BARON_BINARY="/usr/bin/baron-chain"
 
-sleep 1
+# Log functions
+log_info() {
+    echo "[INFO] $(date -u '+%Y-%m-%d %H:%M:%S UTC') - $*"
+}
 
-/usr/bin/cometbft "$@"
+log_error() {
+    echo "[ERROR] $(date -u '+%Y-%m-%d %H:%M:%S UTC') - $*" >&2
+}
+
+# Create required directories
+setup_directories() {
+    if [[ ! -d "${BARON_SOCK_DIR}" ]]; then
+        mkdir -p "${BARON_SOCK_DIR}"
+        chmod 700 "${BARON_SOCK_DIR}"
+        log_info "Created Baron Chain socket directory: ${BARON_SOCK_DIR}"
+    fi
+}
+
+# Cleanup old sockets
+cleanup_sockets() {
+    local sockets=("${PRIVVAL_SOCK}" "${APP_SOCK}")
+    
+    for socket in "${sockets[@]}"; do
+        if [[ -S "${socket}" ]]; then
+            rm -f "${socket}"
+            log_info "Removed stale socket: ${socket}"
+        fi
+    done
+}
+
+# Validate executables and configs
+validate_environment() {
+    local binaries=("${APP_BINARY}" "${BARON_BINARY}")
+    local configs=("${APP_CONFIG}")
+
+    for binary in "${binaries[@]}"; do
+        if [[ ! -x "${binary}" ]]; then
+            log_error "Binary not found or not executable: ${binary}"
+            exit 1
+        fi
+    done
+
+    for config in "${configs[@]}"; do
+        if [[ ! -f "${config}" ]]; then
+            log_error "Configuration file not found: ${config}"
+            exit 1
+        fi
+    done
+}
+
+# Start the application
+start_app() {
+    log_info "Starting Baron Chain application..."
+    "${APP_BINARY}" "${APP_CONFIG}" &
+    APP_PID=$!
+    
+    # Wait for app to initialize
+    local retries=10
+    local wait_time=1
+    local socket_ready=0
+    
+    log_info "Waiting for application sockets to be ready..."
+    for ((i=1; i<=retries; i++)); do
+        if [[ -S "${APP_SOCK}" ]] && [[ -S "${PRIVVAL_SOCK}" ]]; then
+            socket_ready=1
+            break
+        fi
+        sleep "${wait_time}"
+    done
+
+    if [[ ${socket_ready} -eq 0 ]]; then
+        log_error "Application failed to start - sockets not created"
+        exit 1
+    fi
+
+    log_info "Application started successfully"
+}
+
+# Start Baron Chain
+start_baron_chain() {
+    log_info "Starting Baron Chain node..."
+    exec "${BARON_BINARY}" "$@"
+}
+
+# Handle cleanup on script exit
+cleanup() {
+    local exit_code=$?
+    if [[ -n "${APP_PID:-}" ]]; then
+        kill "${APP_PID}" 2>/dev/null || true
+    fi
+    cleanup_sockets
+    exit "${exit_code}"
+}
+
+# Main function
+main() {
+    # Setup and validation
+    setup_directories
+    cleanup_sockets
+    validate_environment
+    
+    # Set up cleanup trap
+    trap cleanup EXIT
+    
+    # Start applications
+    start_app
+    start_baron_chain "$@"
+}
+
+# Error handling
+trap 'log_error "Script failed. Check logs for details."; exit 1' ERR
+
+# Run main function
+main "$@"
