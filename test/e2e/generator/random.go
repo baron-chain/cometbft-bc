@@ -1,107 +1,136 @@
-package main
+package types
 
 import (
-	"math/rand"
 	"sort"
+	
+	"github.com/baron-chain/cometbft-bc/crypto/rand"
+	"github.com/baron-chain/cometbft-bc/libs/math"
 )
 
-// combinations takes input in the form of a map of item lists, and returns a
-// list of all combinations of each item for each key. E.g.:
-//
-// {"foo": [1, 2, 3], "bar": [4, 5, 6]}
-//
-// Will return the following maps:
-//
-// {"foo": 1, "bar": 4}
-// {"foo": 1, "bar": 5}
-// {"foo": 1, "bar": 6}
-// {"foo": 2, "bar": 4}
-// {"foo": 2, "bar": 5}
-// {"foo": 2, "bar": 6}
-// {"foo": 3, "bar": 4}
-// {"foo": 3, "bar": 5}
-// {"foo": 3, "bar": 6}
-func combinations(items map[string][]interface{}) []map[string]interface{} {
-	keys := []string{}
-	for key := range items {
+type (
+	Chooser interface {
+		Choose(*rand.Rand) interface{}
+	}
+
+	ParamCombinations struct {
+		params map[string][]interface{}
+		keys   []string
+	}
+
+	UniformSelector []interface{}
+	
+	WeightedSelector map[interface{}]uint
+	
+	ProbabilitySelector map[string]float64
+	
+	UniformSetSelector []string
+)
+
+func NewParamCombinations(params map[string][]interface{}) *ParamCombinations {
+	keys := make([]string, 0, len(params))
+	for key := range params {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	return combiner(map[string]interface{}{}, keys, items)
+	
+	return &ParamCombinations{
+		params: params,
+		keys:   keys,
+	}
 }
 
-// combiner is a utility function for combinations.
-func combiner(head map[string]interface{}, pending []string, items map[string][]interface{}) []map[string]interface{} {
-	if len(pending) == 0 {
-		return []map[string]interface{}{head}
-	}
-	key, pending := pending[0], pending[1:]
+func (pc *ParamCombinations) Generate() []map[string]interface{} {
+	return pc.generateCombinations(make(map[string]interface{}), pc.keys)
+}
 
-	result := []map[string]interface{}{}
-	for _, value := range items[key] {
-		path := map[string]interface{}{}
-		for k, v := range head {
-			path[k] = v
-		}
-		path[key] = value
-		result = append(result, combiner(path, pending, items)...)
+func (pc *ParamCombinations) generateCombinations(
+	current map[string]interface{}, 
+	remaining []string,
+) []map[string]interface{} {
+	if len(remaining) == 0 {
+		return []map[string]interface{}{current}
 	}
+
+	key := remaining[0]
+	rest := remaining[1:]
+	result := make([]map[string]interface{}, 0)
+
+	for _, value := range pc.params[key] {
+		next := make(map[string]interface{}, len(current)+1)
+		for k, v := range current {
+			next[k] = v
+		}
+		next[key] = value
+		result = append(result, pc.generateCombinations(next, rest)...)
+	}
+
 	return result
 }
 
-// uniformChoice chooses a single random item from the argument list, uniformly weighted.
-type uniformChoice []interface{}
-
-func (uc uniformChoice) Choose(r *rand.Rand) interface{} {
-	return uc[r.Intn(len(uc))]
+func (us UniformSelector) Choose(r *rand.Rand) interface{} {
+	if len(us) == 0 {
+		return nil
+	}
+	return us[r.Intn(len(us))]
 }
 
-// probSetChoice picks a set of strings based on each string's probability (0-1).
-type probSetChoice map[string]float64
-
-func (pc probSetChoice) Choose(r *rand.Rand) []string {
-	choices := []string{}
-	for item, prob := range pc {
-		if r.Float64() <= prob {
-			choices = append(choices, item)
-		}
-	}
-	return choices
-}
-
-// uniformSetChoice picks a set of strings with uniform probability, picking at least one.
-type uniformSetChoice []string
-
-func (usc uniformSetChoice) Choose(r *rand.Rand) []string {
-	choices := []string{}
-	indexes := r.Perm(len(usc))
-	if len(indexes) > 1 {
-		indexes = indexes[:1+r.Intn(len(indexes)-1)]
-	}
-	for _, i := range indexes {
-		choices = append(choices, usc[i])
-	}
-	return choices
-}
-
-// weightedChoice chooses a single random key from a map of keys and weights.
-type weightedChoice map[interface{}]uint
-
-func (wc weightedChoice) Choose(r *rand.Rand) interface{} {
-	total := 0
-	choices := make([]interface{}, 0, len(wc))
-	for choice, weight := range wc {
-		total += int(weight)
-		choices = append(choices, choice)
+func (ws WeightedSelector) Choose(r *rand.Rand) interface{} {
+	if len(ws) == 0 {
+		return nil
 	}
 
-	rem := r.Intn(total)
-	for _, choice := range choices {
-		rem -= int(wc[choice])
-		if rem <= 0 {
+	total := uint(0)
+	for _, weight := range ws {
+		total += weight
+	}
+
+	if total == 0 {
+		return nil
+	}
+
+	selected := r.Uint64() % uint64(total)
+	var cumulative uint64
+
+	for choice, weight := range ws {
+		cumulative += uint64(weight)
+		if selected < cumulative {
 			return choice
 		}
 	}
 
 	return nil
+}
+
+func (ps ProbabilitySelector) Choose(r *rand.Rand) []string {
+	if len(ps) == 0 {
+		return nil
+	}
+
+	selected := make([]string, 0, len(ps))
+	for item, prob := range ps {
+		if prob <= 0 || prob > 1 {
+			continue
+		}
+		if r.Float64() <= prob {
+			selected = append(selected, item)
+		}
+	}
+	
+	return selected
+}
+
+func (us UniformSetSelector) Choose(r *rand.Rand) []string {
+	if len(us) == 0 {
+		return nil
+	}
+
+	count := 1 + r.Intn(math.MaxInt(1, len(us)))
+	indices := r.Perm(len(us))[:count]
+	
+	selected := make([]string, count)
+	for i, idx := range indices {
+		selected[i] = us[idx]
+	}
+	
+	return selected
 }
