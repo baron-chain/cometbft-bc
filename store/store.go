@@ -226,17 +226,6 @@ func (bs *BlockStore) saveBlockData(batch dbm.Batch, height int64, hash []byte,
 	}
 }
 
-package store
-
-import (
-	"fmt"
-	"sync"
-
-	dbm "github.com/baron-chain/cometbft-bc-db"
-	"github.com/cosmos/gogoproto/proto"
-	bcstore "github.com/baron-chain/cometbft-bc/proto/baronchain/store"
-)
-
 // Key calculation functions with improved performance
 func calcBlockMetaKey(height int64) []byte {
 	return []byte(fmt.Sprintf("H:%v", height))
