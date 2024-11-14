@@ -1,6 +1,74 @@
 #!/usr/bin/env bash
 
-# Forcibly remove any stray UNIX sockets left behind from previous runs
-rm -rf /var/run/privval.sock /var/run/app.sock
+set -euo pipefail
 
-/usr/bin/app /cometbft/config/app.toml
+# Script constants
+BARON_SOCK_DIR="/var/run/baron"
+PRIVVAL_SOCK="${BARON_SOCK_DIR}/privval.sock"
+APP_SOCK="${BARON_SOCK_DIR}/app.sock"
+CONFIG_DIR="/baron-chain/config"
+APP_CONFIG="${CONFIG_DIR}/app.toml"
+APP_BINARY="/usr/bin/baron-app"
+
+# Log functions
+log_info() {
+    echo "[INFO] $(date -u '+%Y-%m-%d %H:%M:%S UTC') - $*"
+}
+
+log_error() {
+    echo "[ERROR] $(date -u '+%Y-%m-%d %H:%M:%S UTC') - $*" >&2
+}
+
+# Create required directories
+setup_directories() {
+    if [[ ! -d "${BARON_SOCK_DIR}" ]]; then
+        mkdir -p "${BARON_SOCK_DIR}"
+        chmod 700 "${BARON_SOCK_DIR}"
+        log_info "Created Baron Chain socket directory: ${BARON_SOCK_DIR}"
+    fi
+}
+
+# Cleanup old sockets
+cleanup_sockets() {
+    local sockets=("${PRIVVAL_SOCK}" "${APP_SOCK}")
+    
+    for socket in "${sockets[@]}"; do
+        if [[ -S "${socket}" ]]; then
+            rm -f "${socket}"
+            log_info "Removed stale socket: ${socket}"
+        fi
+    done
+}
+
+# Validate config
+validate_config() {
+    if [[ ! -f "${APP_CONFIG}" ]]; then
+        log_error "Configuration file not found: ${APP_CONFIG}"
+        exit 1
+    fi
+
+    if [[ ! -x "${APP_BINARY}" ]]; then
+        log_error "Baron Chain application binary not found or not executable: ${APP_BINARY}"
+        exit 1
+    }
+}
+
+# Main function
+main() {
+    log_info "Starting Baron Chain application..."
+    
+    # Setup and validation
+    setup_directories
+    cleanup_sockets
+    validate_config
+
+    # Start the application
+    log_info "Launching Baron Chain application with config: ${APP_CONFIG}"
+    exec "${APP_BINARY}" "${APP_CONFIG}"
+}
+
+# Error handling
+trap 'log_error "Script failed. Check logs for details."; exit 1' ERR
+
+# Run main function
+main
