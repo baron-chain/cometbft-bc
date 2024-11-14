@@ -3,89 +3,187 @@ package app
 import (
 	"bytes"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"time"
 
-	"github.com/cometbft/cometbft/abci/example/code"
-	abci "github.com/cometbft/cometbft/abci/types"
-	"github.com/cometbft/cometbft/libs/log"
-	"github.com/cometbft/cometbft/version"
+	"github.com/baron-chain/cometbft-bc/abci/types"
+	"github.com/baron-chain/cometbft-bc/crypto/rand"
+	"github.com/baron-chain/cometbft-bc/libs/log"
+	"github.com/baron-chain/cometbft-bc/version"
 )
 
-const appVersion = 1
+const (
+	AppVersion        = 1
+	DefaultKeyType    = "ed25519"
+	DefaultBlocksKeep = 100
+)
 
-// Application is an ABCI application for use by end-to-end tests. It is a
-// simple key/value store for strings, storing data in memory and persisting
-// to disk as JSON, taking state sync snapshots if requested.
+// BaronApp represents the Baron Chain ABCI application
+type BaronApp struct {
+	types.BaseApplication
 
-type Application struct {
-	abci.BaseApplication
-	logger          log.Logger
-	state           *State
-	snapshots       *SnapshotStore
-	cfg             *Config
-	restoreSnapshot *abci.Snapshot
-	restoreChunks   [][]byte
+	logger     log.Logger
+	state      *State
+	snapshots  *SnapshotStore
+	config     *Config
+	restoreSnp *types.Snapshot
+	chunks     [][]byte
 }
 
-// Config allows for the setting of high level parameters for running the e2e Application
-// KeyType and ValidatorUpdates must be the same for all nodes running the same application.
+// Config defines Baron Chain application configuration
 type Config struct {
-	// The directory with which state.json will be persisted in. Usually $HOME/.cometbft/data
-	Dir string `toml:"dir"`
-
-	// SnapshotInterval specifies the height interval at which the application
-	// will take state sync snapshots. Defaults to 0 (disabled).
-	SnapshotInterval uint64 `toml:"snapshot_interval"`
-
-	// RetainBlocks specifies the number of recent blocks to retain. Defaults to
-	// 0, which retains all blocks. Must be greater that PersistInterval,
-	// SnapshotInterval and EvidenceAgeHeight.
-	RetainBlocks uint64 `toml:"retain_blocks"`
-
-	// KeyType sets the curve that will be used by validators.
-	// Options are ed25519 & secp256k1
-	KeyType string `toml:"key_type"`
-
-	// PersistInterval specifies the height interval at which the application
-	// will persist state to disk. Defaults to 1 (every height), setting this to
-	// 0 disables state persistence.
-	PersistInterval uint64 `toml:"persist_interval"`
-
-	// ValidatorUpdates is a map of heights to validator names and their power,
-	// and will be returned by the ABCI application. For example, the following
-	// changes the power of validator01 and validator02 at height 1000:
-	//
-	// [validator_update.1000]
-	// validator01 = 20
-	// validator02 = 10
-	//
-	// Specifying height 0 returns the validator update during InitChain. The
-	// application returns the validator updates as-is, i.e. removing a
-	// validator must be done by returning it with power 0, and any validators
-	// not specified are not changed.
-	//
-	// height <-> pubkey <-> voting power
-	ValidatorUpdates map[string]map[string]uint8 `toml:"validator_update"`
-
-	// Add artificial delays to each of the main ABCI calls to mimic computation time
-	// of the application
-	PrepareProposalDelay time.Duration `toml:"prepare_proposal_delay"`
-	ProcessProposalDelay time.Duration `toml:"process_proposal_delay"`
-	CheckTxDelay         time.Duration `toml:"check_tx_delay"`
-	// TODO: add vote extension and finalize block delays once completed (@cmwaters)
+	DataDir            string        `toml:"data_dir"`
+	SnapshotInterval   uint64        `toml:"snapshot_interval"`
+	RetainBlocks       uint64        `toml:"retain_blocks"`
+	KeyType            string        `toml:"key_type"`
+	PersistInterval    uint64        `toml:"persist_interval"`
+	ValidatorUpdates   ValidatorMap  `toml:"validator_updates"`
+	ProposalDelay      time.Duration `toml:"proposal_delay"`
+	ProcessingDelay    time.Duration `toml:"processing_delay"`
+	TransactionDelay   time.Duration `toml:"transaction_delay"`
 }
 
-func DefaultConfig(dir string) *Config {
-	return &Config{
-		PersistInterval:  1,
-		SnapshotInterval: 100,
-		Dir:              dir,
+type ValidatorMap map[string]map[string]uint8
+
+// NewBaronApp creates a new Baron Chain application instance
+func NewBaronApp(cfg *Config) (*BaronApp, error) {
+	if err := validateConfig(cfg); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
 	}
+
+	state, err := NewState(cfg.DataDir, cfg.PersistInterval)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize state: %w", err)
+	}
+
+	snapshotDir := filepath.Join(cfg.DataDir, "snapshots")
+	snapshots, err := NewSnapshotStore(snapshotDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize snapshots: %w", err)
+	}
+
+	return &BaronApp{
+		logger:    log.NewTMLogger(log.NewSyncWriter(os.Stdout)),
+		state:     state,
+		snapshots: snapshots,
+		config:    cfg,
+	}, nil
+}
+
+func validateConfig(cfg *Config) error {
+	if cfg.DataDir == "" {
+		return fmt.Errorf("data directory must be specified")
+	}
+	if cfg.RetainBlocks > 0 && cfg.RetainBlocks < cfg.SnapshotInterval {
+		return fmt.Errorf("retain_blocks must be greater than snapshot_interval")
+	}
+	if cfg.KeyType != "" && cfg.KeyType != "ed25519" && cfg.KeyType != "secp256k1" {
+		return fmt.Errorf("invalid key_type: %s", cfg.KeyType)
+	}
+	return nil
+}
+
+// Info implements ABCI interface
+func (app *BaronApp) Info(req types.RequestInfo) types.ResponseInfo {
+	return types.ResponseInfo{
+		Version:          version.ABCIVersion,
+		AppVersion:       AppVersion,
+		LastBlockHeight:  int64(app.state.Height),
+		LastBlockAppHash: app.state.Hash,
+	}
+}
+
+// InitChain initializes the blockchain with validators and initial app state
+func (app *BaronApp) InitChain(req types.RequestInitChain) types.ResponseInitChain {
+	if err := app.initializeState(req); err != nil {
+		app.logger.Error("failed to initialize chain", "error", err)
+		panic(err)
+	}
+
+	validators, err := app.getValidatorUpdates(0)
+	if err != nil {
+		app.logger.Error("failed to get validator updates", "error", err)
+		panic(err)
+	}
+
+	return types.ResponseInitChain{
+		AppHash:    app.state.Hash,
+		Validators: validators,
+	}
+}
+
+func (app *BaronApp) initializeState(req types.RequestInitChain) error {
+	app.state.initialHeight = uint64(req.InitialHeight)
+	if len(req.AppStateBytes) > 0 {
+		if err := app.state.Import(0, req.AppStateBytes); err != nil {
+			return fmt.Errorf("failed to import app state: %w", err)
+		}
+	}
+	return nil
+}
+
+// CheckTx validates a transaction before adding it to the mempool
+func (app *BaronApp) CheckTx(req types.RequestCheckTx) types.ResponseCheckTx {
+	if _, _, err := parseTx(req.Tx); err != nil {
+		return types.ResponseCheckTx{
+			Code: 1,
+			Log:  fmt.Sprintf("invalid transaction: %v", err),
+		}
+	}
+
+	if app.config.TransactionDelay > 0 {
+		time.Sleep(app.config.TransactionDelay)
+	}
+
+	return types.ResponseCheckTx{Code: 0, GasWanted: 1}
+}
+
+// DeliverTx executes a transaction in the blockchain
+func (app *BaronApp) DeliverTx(req types.RequestDeliverTx) types.ResponseDeliverTx {
+	key, value, err := parseTx(req.Tx)
+	if err != nil {
+		app.logger.Error("failed to process transaction", "error", err)
+		return types.ResponseDeliverTx{Code: 1, Log: err.Error()}
+	}
+
+	if err := app.state.Set(key, value); err != nil {
+		return types.ResponseDeliverTx{Code: 2, Log: err.Error()}
+	}
+
+	return types.ResponseDeliverTx{Code: 0}
+}
+
+// PrepareProposal handles block proposal preparation
+func (app *BaronApp) PrepareProposal(req types.RequestPrepareProposal) types.ResponsePrepareProposal {
+	txs := app.filterTransactions(req.Txs, req.MaxTxBytes)
+
+	if app.config.ProposalDelay > 0 {
+		time.Sleep(app.config.ProposalDelay)
+	}
+
+	return types.ResponsePrepareProposal{Txs: txs}
+}
+
+func (app *BaronApp) filterTransactions(txs [][]byte, maxBytes int64) [][]byte {
+	filtered := make([][]byte, 0, len(txs))
+	var totalBytes int64
+
+	for _, tx := range txs {
+		txSize := int64(len(tx))
+		if totalBytes+txSize > maxBytes {
+			break
+		}
+		
+		if _, _, err := parseTx(tx); err == nil {
+			filtered = append(filtered, tx)
+			totalBytes += txSize
+		}
+	}
+
+	return filtered
 }
 
 // NewApplication creates the application.
