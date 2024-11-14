@@ -1,120 +1,155 @@
-package main
+package testgen
 
 import (
 	"errors"
 	"fmt"
-	"math/rand"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
-	e2e "github.com/cometbft/cometbft/test/e2e/pkg"
-	"github.com/cometbft/cometbft/version"
+	"github.com/baron-chain/cometbft-bc/crypto/rand"
+	e2e "github.com/baron-chain/cometbft-bc/test/e2e/pkg"
+	"github.com/baron-chain/cometbft-bc/version"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
+const (
+	defaultBranch   = "main"
+	defaultRegistry = "baron-chain/e2e-node"
+)
+
 var (
-	// testnetCombinations defines global testnet options, where we generate a
-	// separate testnet for each combination (Cartesian product) of options.
-	testnetCombinations = map[string][]interface{}{
+	testnetConfigs = map[string][]interface{}{
 		"topology":      {"single", "quad", "large"},
 		"initialHeight": {0, 1000},
 		"initialState": {
 			map[string]string{},
-			map[string]string{"initial01": "a", "initial02": "b", "initial03": "c"},
+			map[string]string{"baron01": "a", "baron02": "b", "baron03": "c"},
 		},
 		"validators": {"genesis", "initchain"},
 	}
-	nodeVersions = weightedChoice{
+
+	nodeVersions = WeightedChoice{
 		"": 2,
 	}
 
-	// The following specify randomly chosen values for testnet nodes.
-	nodeDatabases = uniformChoice{"goleveldb", "cleveldb", "rocksdb", "boltdb", "badgerdb"}
-	ipv6          = uniformChoice{false, true}
-	// FIXME: grpc disabled due to https://github.com/tendermint/tendermint/issues/5439
-	nodeABCIProtocols     = uniformChoice{"unix", "tcp", "builtin"} // "grpc"
-	nodePrivvalProtocols  = uniformChoice{"file", "unix", "tcp"}
-	nodeBlockSyncs        = uniformChoice{"v0"} // "v2"
-	nodeStateSyncs        = uniformChoice{false, true}
-	nodeMempools          = uniformChoice{"v0", "v1"}
-	nodePersistIntervals  = uniformChoice{0, 1, 5}
-	nodeSnapshotIntervals = uniformChoice{0, 3}
-	nodeRetainBlocks      = uniformChoice{
+	nodeDatabases = UniformChoice{"goleveldb", "rocksdb", "badgerdb"}
+	ipv6Configs   = UniformChoice{false, true}
+	
+	nodeProtocols = UniformChoice{"unix", "tcp", "builtin"}
+	privvalProts  = UniformChoice{"file", "unix", "tcp"}
+	syncVersions  = UniformChoice{"v0"}
+	stateSync     = UniformChoice{false, true}
+	mempoolVers   = UniformChoice{"v0", "v1"}
+	
+	persistInts   = UniformChoice{0, 1, 5}
+	snapshotInts  = UniformChoice{0, 3}
+	retainBlocks  = UniformChoice{
 		0,
 		2 * int(e2e.EvidenceAgeHeight),
 		4 * int(e2e.EvidenceAgeHeight),
 	}
-	evidence          = uniformChoice{0, 1, 10}
-	abciDelays        = uniformChoice{"none", "small", "large"}
-	nodePerturbations = probSetChoice{
+	
+	evidenceAmts = UniformChoice{0, 1, 10}
+	abciDelays   = UniformChoice{"none", "small", "large"}
+	
+	nodePerturbations = ProbSetChoice{
 		"disconnect": 0.1,
 		"pause":      0.1,
 		"kill":       0.1,
 		"restart":    0.1,
 		"upgrade":    0.3,
 	}
-	lightNodePerturbations = probSetChoice{
+	
+	lightPerturbations = ProbSetChoice{
 		"upgrade": 0.3,
 	}
 )
 
-type generateConfig struct {
-	randSource   *rand.Rand
-	outputDir    string
-	multiVersion string
-	prometheus   bool
+type GeneratorConfig struct {
+	RandSource    *rand.Rand
+	OutputDir     string
+	MultiVersion  string
+	EnableMetrics bool
 }
 
-// Generate generates random testnets using the given RNG.
-func Generate(cfg *generateConfig) ([]e2e.Manifest, error) {
-	upgradeVersion := ""
+func Generate(cfg *GeneratorConfig) ([]e2e.Manifest, error) {
+	upgradeVer := ""
 
-	if cfg.multiVersion != "" {
+	if cfg.MultiVersion != "" {
 		var err error
-		nodeVersions, upgradeVersion, err = parseWeightedVersions(cfg.multiVersion)
+		nodeVersions, upgradeVer, err = parseVersionWeights(cfg.MultiVersion)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed parsing version weights: %w", err)
 		}
-		if _, ok := nodeVersions["local"]; ok {
-			nodeVersions[""] = nodeVersions["local"]
+		
+		if ver, ok := nodeVersions["local"]; ok {
+			nodeVersions[""] = ver 
 			delete(nodeVersions, "local")
-			if upgradeVersion == "local" {
-				upgradeVersion = ""
+			if upgradeVer == "local" {
+				upgradeVer = ""
 			}
 		}
-		if _, ok := nodeVersions["latest"]; ok {
-			latestVersion, err := gitRepoLatestReleaseVersion(cfg.outputDir)
+
+		if ver, ok := nodeVersions["latest"]; ok {
+			latestVer, err := getLatestGitVersion(cfg.OutputDir)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("failed getting latest version: %w", err) 
 			}
-			nodeVersions[latestVersion] = nodeVersions["latest"]
+			nodeVersions[latestVer] = ver
 			delete(nodeVersions, "latest")
-			if upgradeVersion == "latest" {
-				upgradeVersion = latestVersion
+			if upgradeVer == "latest" {
+				upgradeVer = latestVer
 			}
 		}
 	}
-	fmt.Println("Generating testnet with weighted versions:")
-	for ver, wt := range nodeVersions {
-		if ver == "" {
-			fmt.Printf("- local: %d\n", wt)
-		} else {
-			fmt.Printf("- %s: %d\n", ver, wt)
-		}
-	}
-	manifests := []e2e.Manifest{}
-	for _, opt := range combinations(testnetCombinations) {
-		manifest, err := generateTestnet(cfg.randSource, opt, upgradeVersion, cfg.prometheus)
+
+	manifests := make([]e2e.Manifest, 0)
+	for _, opts := range generateCombinations(testnetConfigs) {
+		manifest, err := generateTestnet(cfg.RandSource, opts, upgradeVer, cfg.EnableMetrics)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed generating testnet: %w", err)
 		}
-		manifests = append(manifests, manifest)
+		manifests = append(manifests, manifest) 
 	}
+
 	return manifests, nil
+}
+
+func generateTestnet(r *rand.Rand, opts map[string]interface{}, upgradeVer string, metrics bool) (e2e.Manifest, error) {
+	manifest := e2e.Manifest{
+		IPv6:             ipv6Configs.Choose(r).(bool),
+		ABCIProtocol:     nodeProtocols.Choose(r).(string),
+		InitialHeight:    int64(opts["initialHeight"].(int)),
+		InitialState:     opts["initialState"].(map[string]string),
+		Validators:       &map[string]int64{},
+		ValidatorUpdates: make(map[string]map[string]int64),
+		Evidence:         evidenceAmts.Choose(r).(int),
+		Nodes:           make(map[string]*e2e.ManifestNode),
+		UpgradeVersion:   upgradeVer,
+		Prometheus:       metrics,
+	}
+
+	// Setup delays based on selected ABCI delay profile
+	configureABCIDelays(&manifest, abciDelays.Choose(r).(string))
+
+	// Generate topology
+	if err := generateTopology(r, &manifest, opts["topology"].(string)); err != nil {
+		return manifest, err
+	}
+
+	// Configure validators
+	if err := configureValidators(&manifest, opts["validators"].(string)); err != nil {
+		return manifest, err
+	}
+
+	// Setup peer discovery
+	setupPeerDiscovery(r, &manifest)
+
+	return manifest, nil
 }
 
 // generateTestnet generates a single testnet with the given options.
