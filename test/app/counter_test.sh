@@ -1,143 +1,146 @@
-#! /bin/bash
+#!/usr/bin/env bash
 
-export GO111MODULE=on
+# Strict mode
+set -euo pipefail
+IFS=$'\n\t'
 
-if [[ "$GRPC_BROADCAST_TX" == "" ]]; then
-	GRPC_BROADCAST_TX=""
-fi
+# Configuration
+readonly DEFAULT_PORT=9657
+readonly API_BASE="http://localhost:${DEFAULT_PORT}"
+readonly GRPC_CLIENT_PATH="test/app/grpc_client"
+readonly PQC_ENABLED=true
 
-set -u
+# Colors for output
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly NC='\033[0m'
 
-#####################
-# counter over socket
-#####################
+# Test configuration
 TESTNAME=$1
+GRPC_BROADCAST_TX=${GRPC_BROADCAST_TX:-""}
 
-# Send some txs
-
-function getCode() {
-	set +u
-	R=$1
-	set -u
-	if [[ "$R" == "" ]]; then
-		echo -1
-	fi
-
-	if [[ $(echo $R | jq 'has("code")') == "true" ]]; then
-		# this wont actually work if theres an error ...
-		echo "$R" | jq ".code"
-	else
-		# protobuf auto adds `omitempty` to everything so code OK and empty data/log
-		# will not even show when marshalled into json
-		# apparently we can use github.com/golang/protobuf/jsonpb to do the marshalling ...
-		echo 0
-	fi
+# Logging function
+log() {
+    local level=$1
+    shift
+    echo -e "${level}$(date '+%Y-%m-%d %H:%M:%S'): $*${NC}"
 }
 
-# build grpc client if needed
-if [[ "$GRPC_BROADCAST_TX" != "" ]]; then
-	if [  -f test/app/grpc_client ]; then
-		rm test/app/grpc_client
-	fi
-	echo "... building grpc_client"
-	go build -mod=readonly -o test/app/grpc_client test/app/grpc_client.go
-fi
-
-function sendTx() {
-	TX=$1
-	set +u
-	SHOULD_ERR=$2
-	if [ "$SHOULD_ERR" == "" ]; then
-		SHOULD_ERR=false
-	fi
-	set -u
-	if [[ "$GRPC_BROADCAST_TX" == "" ]]; then
-		RESPONSE=$(curl -s localhost:26657/broadcast_tx_commit?tx=0x"$TX")
-		IS_ERR=$(echo "$RESPONSE" | jq 'has("error")')
-		ERROR=$(echo "$RESPONSE" | jq '.error')
-		ERROR=$(echo "$ERROR" | tr -d '"') # remove surrounding quotes
-
-		RESPONSE=$(echo "$RESPONSE" | jq '.result')
-	else
-		RESPONSE=$(./test/app/grpc_client "$TX")
-		IS_ERR=false
-		ERROR=""
-	fi
-
-	echo "RESPONSE"
-	echo "$RESPONSE"
-
-	echo "$RESPONSE" | jq . &> /dev/null
-	IS_JSON=$?
-	if [[ "$IS_JSON" != "0" ]]; then
-		IS_ERR=true
-		ERROR="$RESPONSE"
-	fi
-	APPEND_TX_RESPONSE=$(echo "$RESPONSE" | jq '.deliver_tx')
-	APPEND_TX_CODE=$(getCode "$APPEND_TX_RESPONSE")
-	CHECK_TX_RESPONSE=$(echo "$RESPONSE" | jq '.check_tx')
-	CHECK_TX_CODE=$(getCode "$CHECK_TX_RESPONSE")
-
-	echo "-------"
-	echo "TX $TX"
-	echo "RESPONSE $RESPONSE"
-	echo "ERROR $ERROR"
-	echo "IS_ERR $IS_ERR"
-	echo "----"
-
-	if $SHOULD_ERR; then
-		if [[ "$IS_ERR" != "true" ]]; then
-			echo "Expected error sending tx ($TX)"
-			exit 1
-		fi
-	else
-		if [[ "$IS_ERR" == "true" ]]; then
-			echo "Unexpected error sending tx ($TX)"
-			exit 1
-		fi
-
-	fi
+# Error handling
+error_exit() {
+    log "${RED}" "Error: $1"
+    exit 1
 }
 
-echo "... sending tx. expect no error"
+# Get response code with error handling
+get_code() {
+    local response=$1
+    if [[ -z "$response" ]]; then
+        echo -1
+        return
+    fi
+    
+    if [[ $(echo "$response" | jq 'has("code")') == "true" ]]; then
+        echo "$response" | jq -r ".code"
+    else
+        echo 0
+    fi
+}
 
-# 0 should pass once and get in block, with no error
-TX=00
-sendTx $TX
-if [[ $APPEND_TX_CODE != 0 ]]; then
-	echo "Got non-zero exit code for $TX. $RESPONSE"
-	exit 1
-fi
+# Build gRPC client if needed
+build_grpc_client() {
+    if [[ -n "$GRPC_BROADCAST_TX" ]]; then
+        log "${YELLOW}" "Building gRPC client..."
+        if [[ -f "$GRPC_CLIENT_PATH" ]]; then
+            rm "$GRPC_CLIENT_PATH"
+        fi
+        GO111MODULE=on go build -mod=readonly -o "$GRPC_CLIENT_PATH" test/app/grpc_client.go
+    fi
+}
 
+# Send transaction with PQC signature
+send_tx() {
+    local tx=$1
+    local should_err=${2:-false}
+    local response=""
+    local is_err=false
+    local error=""
 
-echo "... sending tx. expect error"
+    # Add PQC signature if enabled
+    if [[ "$PQC_ENABLED" == true ]]; then
+        tx="${tx}$(generate_pqc_signature "$tx")"
+    fi
 
-# second time should get rejected by the mempool (return error and non-zero code)
-sendTx $TX true
+    if [[ -z "$GRPC_BROADCAST_TX" ]]; then
+        response=$(curl -s "${API_BASE}/broadcast_tx_commit?tx=0x${tx}" || error_exit "Failed to send transaction")
+        is_err=$(echo "$response" | jq 'has("error")')
+        error=$(echo "$response" | jq -r '.error // empty')
+        response=$(echo "$response" | jq '.result // empty')
+    else
+        response=$(./"$GRPC_CLIENT_PATH" "$tx")
+        is_err=false
+        error=""
+    fi
 
+    # Validate JSON response
+    if ! echo "$response" | jq . &> /dev/null; then
+        is_err=true
+        error="$response"
+    fi
 
-echo "... sending tx. expect no error"
+    # Process response
+    local append_tx_response=$(echo "$response" | jq '.deliver_tx')
+    local append_tx_code=$(get_code "$append_tx_response")
+    local check_tx_response=$(echo "$response" | jq '.check_tx')
+    local check_tx_code=$(get_code "$check_tx_response")
 
-# now, TX=01 should pass, with no error
-TX=01
-sendTx $TX
-if [[ $APPEND_TX_CODE != 0 ]]; then
-	echo "Got non-zero exit code for $TX. $RESPONSE"
-	exit 1
-fi
+    # Log transaction details
+    log "${GREEN}" "Transaction: $tx"
+    log "${GREEN}" "Response: $response"
+    [[ -n "$error" ]] && log "${RED}" "Error: $error"
+    log "${YELLOW}" "Is Error: $is_err"
 
-echo "... sending tx. expect no error, but invalid"
+    # Validate response against expectations
+    if [[ "$should_err" == true ]] && [[ "$is_err" != "true" ]]; then
+        error_exit "Expected error sending tx ($tx)"
+    elif [[ "$should_err" == false ]] && [[ "$is_err" == "true" ]]; then
+        error_exit "Unexpected error sending tx ($tx)"
+    fi
 
-# now, TX=03 should get in a block (passes CheckTx, no error), but is invalid
-TX=03
-sendTx $TX
-if [[ "$CHECK_TX_CODE" != 0 ]]; then
-	echo "Got non-zero exit code for checktx on $TX. $RESPONSE"
-	exit 1
-fi
-if [[ $APPEND_TX_CODE == 0 ]]; then
-	echo "Got zero exit code for $TX. Should have been bad nonce. $RESPONSE"
-	exit 1
-fi
+    # Export codes for test validation
+    APPEND_TX_CODE=$append_tx_code
+    CHECK_TX_CODE=$check_tx_code
+}
 
-echo "Passed Test: $TESTNAME"
+# Generate PQC signature (simulated)
+generate_pqc_signature() {
+    local tx=$1
+    echo "pqc_$(echo "$tx" | sha256sum | cut -d' ' -f1)"
+}
+
+# Main test sequence
+main() {
+    build_grpc_client
+
+    log "${GREEN}" "Testing simple valid transaction"
+    send_tx "00"
+    [[ $APPEND_TX_CODE != 0 ]] && error_exit "Got non-zero exit code for 00. Response: $response"
+
+    log "${GREEN}" "Testing duplicate transaction (should fail)"
+    send_tx "00" true
+
+    log "${GREEN}" "Testing second valid transaction"
+    send_tx "01"
+    [[ $APPEND_TX_CODE != 0 ]] && error_exit "Got non-zero exit code for 01. Response: $response"
+
+    log "${GREEN}" "Testing invalid transaction"
+    send_tx "03"
+    [[ $CHECK_TX_CODE != 0 ]] && error_exit "Got non-zero exit code for checktx on 03. Response: $response"
+    [[ $APPEND_TX_CODE == 0 ]] && error_exit "Got zero exit code for 03. Should have been bad nonce. Response: $response"
+
+    log "${GREEN}" "Passed Test: $TESTNAME"
+}
+
+# Execute main function
+main
