@@ -1,63 +1,66 @@
 SHELL := /bin/bash
-
-# Directory configuration
 CURDIR := $(shell pwd)
 SCRIPTS_DIR := $(CURDIR)
 
-# Docker image configuration
-DOCKER_REPO := cometbft/cometbft
-DOCKER_TESTING_IMAGE := cometbft/testing
-DOCKER_AMAZONLINUX_IMAGE := $(DOCKER_REPO):build_c-amazonlinux
+# Baron Chain Docker configuration
+DOCKER_REPO := baronchain/node
+DOCKER_TESTING_IMAGE := baronchain/testing
+DOCKER_AMAZONLINUX_IMAGE := $(DOCKER_REPO):build-amazonlinux
 
-# Dockerfile paths
-DOCKERFILE_TESTING := Dockerfile.testing
-DOCKERFILE_AMAZONLINUX := Dockerfile.build_c-amazonlinux
+# Build configuration
+DOCKERFILES := $(CURDIR)/docker
+DOCKERFILE_TESTING := $(DOCKERFILES)/Dockerfile.testing
+DOCKERFILE_AMAZONLINUX := $(DOCKERFILES)/Dockerfile.build-amazonlinux
 
-# Docker build options
-DOCKER_BUILD_OPTS := --no-cache=false --pull
+# Build arguments
+BUILD_DATE := $(shell date -u +'%Y-%m-%d')
+BUILD_VERSION := $(shell git describe --tags --always)
+DOCKER_BUILD_OPTS := --no-cache=false --pull \
+					--build-arg BUILD_DATE=$(BUILD_DATE) \
+					--build-arg BUILD_VERSION=$(BUILD_VERSION)
 
-# Common docker build command
+# Docker build template
 define docker_build
 	docker build $(DOCKER_BUILD_OPTS) \
 		--tag $(1) \
 		--file $(2) \
+		--label "org.opencontainers.image.created=$(BUILD_DATE)" \
+		--label "org.opencontainers.image.version=$(BUILD_VERSION)" \
 		.
 endef
 
-.PHONY: all build push build_testing build_amazonlinux clean help
+.PHONY: all build push build-testing build-amazonlinux clean help
 
-# Default target
-all: build build_testing build_amazonlinux
+all: build build-testing build-amazonlinux
 
-# Main build targets
 build:
-	@echo "==> Building main Docker image"
+	@echo "Building Baron Chain node image"
 	@$(SCRIPTS_DIR)/build.sh
 
 push:
-	@echo "==> Pushing Docker images"
+	@echo "Pushing Baron Chain images to registry"
 	@$(SCRIPTS_DIR)/push.sh
 
-build_testing:
-	@echo "==> Building testing image"
+build-testing:
+	@echo "Building Baron Chain testing environment"
 	$(call docker_build,$(DOCKER_TESTING_IMAGE),$(DOCKERFILE_TESTING))
 
-build_amazonlinux:
-	@echo "==> Building Amazon Linux image"
+build-amazonlinux:
+	@echo "Building Baron Chain Amazon Linux environment"
 	$(call docker_build,$(DOCKER_AMAZONLINUX_IMAGE),$(DOCKERFILE_AMAZONLINUX))
 
-# Cleanup target
 clean:
-	@echo "==> Cleaning Docker images"
-	docker rmi -f $(DOCKER_TESTING_IMAGE) $(DOCKER_AMAZONLINUX_IMAGE) 2>/dev/null || true
+	@echo "Cleaning Baron Chain Docker images"
+	-docker rmi -f $(DOCKER_TESTING_IMAGE) $(DOCKER_AMAZONLINUX_IMAGE) 2>/dev/null
 
-# Help target
 help:
+	@echo "Baron Chain Docker Build System"
+	@echo
 	@echo "Available targets:"
-	@echo "  all                    - Build all Docker images"
-	@echo "  build                  - Build main Docker image"
-	@echo "  push                   - Push Docker images to registry"
-	@echo "  build_testing          - Build testing Docker image"
-	@echo "  build_amazonlinux      - Build Amazon Linux Docker image"
-	@echo "  clean                  - Remove built Docker images"
-	@echo "  help                   - Show this help message"
+	@echo "  all              - Build all Baron Chain images"
+	@echo "  build            - Build Baron Chain node image"
+	@echo "  push             - Push images to registry"
+	@echo "  build-testing    - Build testing environment"
+	@echo "  build-amazonlinux- Build Amazon Linux environment"
+	@echo "  clean            - Remove built images"
+	@echo "  help             - Show this help"
