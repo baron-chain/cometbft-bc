@@ -24,7 +24,6 @@ const (
     portRangeEnd   = 30000
 )
 
-// MockApp implements a slow application for testing
 type MockApp struct {
     types.BaseApplication
     wg *sync.WaitGroup
