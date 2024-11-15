@@ -1,76 +1,56 @@
 # syntax=docker/dockerfile:1
-
-# Build stage
 FROM amazonlinux:2 AS builder
 
-# Build arguments
-ARG GOVERSION=1.12.9
-ARG GO_DOWNLOAD_SHA256=ac2a6efcc1f5ec8bdc0db0a988bb1d301d64b6d61b7e8d9e42f662fbb75a2b9b
+ARG GOVERSION=1.20.12
+ARG GO_DOWNLOAD_SHA256=9c5d204bbc1027798e8e9a843173d50934e6fe087e4b8d4517c86f5bc41a154b
 ARG COMETBFT_BUILD_OPTIONS=cleveldb
 ARG BUILD_DATE="2024"
 
-# Environment variables
 ENV GOROOT=/usr/local/go \
     GOPATH=/go/src \
     GOBIN=/go/bin \
     PATH=/usr/local/go/bin:/go/bin:$PATH \
-    WORKSPACE=/cometbft
-
-# Package lists
-ENV BUILD_DEPS="wget epel-release" \
+    WORKSPACE=/baronchain \
+    BUILD_DEPS="wget epel-release" \
     DEV_DEPS="gcc gcc-c++ make git which leveldb-devel"
 
-# Install dependencies and Go
-RUN set -eux; \
-    # Update system and install dependencies
+RUN set -eux && \
     yum -y update && \
     yum -y install $BUILD_DEPS && \
-    # Install EPEL repository
     wget http://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm && \
     rpm -ivh epel-release-latest-7.noarch.rpm && \
-    # Install development tools
     yum -y groupinstall "Development Tools" && \
     yum -y install $DEV_DEPS && \
-    # Install Go
     cd /tmp && \
     wget -O go.tgz "https://dl.google.com/go/go${GOVERSION}.linux-amd64.tar.gz" && \
     echo "${GO_DOWNLOAD_SHA256} go.tgz" | sha256sum -c - && \
     tar -C /usr/local -xf go.tgz && \
-    # Create necessary directories
     mkdir -p /go/{src,bin} ${WORKSPACE} && \
-    # Cleanup
+    groupadd -r baronchain && \
+    useradd -r -g baronchain -d ${WORKSPACE} baronchain && \
+    chown -R baronchain:baronchain ${WORKSPACE} /go && \
     yum clean all && \
     rm -rf /var/cache/yum /tmp/* epel-release-latest-7.noarch.rpm
 
-# Set working directory
 WORKDIR ${WORKSPACE}
 
-# Create non-root user
-RUN groupadd -r cometbft && \
-    useradd -r -g cometbft -d ${WORKSPACE} cometbft && \
-    chown -R cometbft:cometbft ${WORKSPACE} /go
+USER baronchain
 
-# Switch to non-root user
-USER cometbft
-
-# Health check
 HEALTHCHECK --interval=30s \
             --timeout=10s \
             --start-period=5s \
             --retries=3 \
-            CMD which make && make --version || exit 1
+            CMD go version && make --version || exit 1
 
-# Metadata
-LABEL org.opencontainers.image.title="BARON CHAIN CometBFT Amazon Linux Build" \
-      org.opencontainers.image.description="BARON CHAIN CometBFT Amazon Linux build environment" \
+LABEL org.opencontainers.image.title="Baron Chain Node Builder" \
+      org.opencontainers.image.description="Baron Chain network node build environment" \
       org.opencontainers.image.version=${GOVERSION} \
       org.opencontainers.image.created=${BUILD_DATE} \
-      org.opencontainers.image.authors="Baron Chain Team" \
+      org.opencontainers.image.authors="liviu@baronchain.org" \
       org.opencontainers.image.vendor="Baron Chain" \
-      org.opencontainers.image.source="https://github.com/baron/cometbft" \
-      org.opencontainers.image.documentation="https://docs.baron.chain/cometbft" \
+      org.opencontainers.image.source="https://github.com/baron-chain/cometbft-bc" \
+      org.opencontainers.image.documentation="https://docs.baronchain.org" \
       org.opencontainers.image.go.version=${GOVERSION} \
       org.opencontainers.image.build.options=${COMETBFT_BUILD_OPTIONS}
 
-# Default command
-CMD ["/usr/bin/make", "build", "COMETBFT_BUILD_OPTIONS=cleveldb"]
+CMD ["/usr/bin/make", "build", "BARON_BUILD_OPTIONS=cleveldb"]
