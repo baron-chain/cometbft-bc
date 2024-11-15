@@ -1,189 +1,187 @@
 package abcicli_test
 
 import (
-	"fmt"
-	"sync"
-	"testing"
-	"time"
+    "fmt"
+    "sync"
+    "testing"
+    "time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+    "github.com/stretchr/testify/assert"
+    "github.com/stretchr/testify/require"
 
-	abcicli "github.com/cometbft/cometbft/abci/client"
-	"github.com/cometbft/cometbft/abci/server"
-	"github.com/cometbft/cometbft/abci/types"
-	cmtrand "github.com/cometbft/cometbft/libs/rand"
-	"github.com/cometbft/cometbft/libs/service"
+    abcicli "github.com/baron-chain/cometbft-bc/abci/client"
+    "github.com/baron-chain/cometbft-bc/abci/server"
+    "github.com/baron-chain/cometbft-bc/abci/types"
+    bcrand "github.com/baron-chain/cometbft-bc/libs/rand"
+    "github.com/baron-chain/cometbft-bc/libs/service"
 )
 
-func TestProperSyncCalls(t *testing.T) {
-	app := slowApp{}
+const (
+    testTimeout     = time.Second
+    responseTimeout = 20 * time.Millisecond
+    blockDelay     = 200 * time.Millisecond
+    portRangeStart = 20000
+    portRangeEnd   = 30000
+)
 
-	s, c := setupClientServer(t, app)
-	t.Cleanup(func() {
-		if err := s.Stop(); err != nil {
-			t.Error(err)
-		}
-	})
-	t.Cleanup(func() {
-		if err := c.Stop(); err != nil {
-			t.Error(err)
-		}
-	})
-
-	resp := make(chan error, 1)
-	go func() {
-		// This is BeginBlockSync unrolled....
-		reqres := c.BeginBlockAsync(types.RequestBeginBlock{})
-		err := c.FlushSync()
-		require.NoError(t, err)
-		res := reqres.Response.GetBeginBlock()
-		require.NotNil(t, res)
-		resp <- c.Error()
-	}()
-
-	select {
-	case <-time.After(time.Second):
-		require.Fail(t, "No response arrived")
-	case err, ok := <-resp:
-		require.True(t, ok, "Must not close channel")
-		assert.NoError(t, err, "This should return success")
-	}
+// MockApp implements a slow application for testing
+type MockApp struct {
+    types.BaseApplication
+    wg *sync.WaitGroup
 }
 
-func TestHangingSyncCalls(t *testing.T) {
-	app := slowApp{}
-
-	s, c := setupClientServer(t, app)
-	t.Cleanup(func() {
-		if err := s.Stop(); err != nil {
-			t.Log(err)
-		}
-	})
-	t.Cleanup(func() {
-		if err := c.Stop(); err != nil {
-			t.Log(err)
-		}
-	})
-
-	resp := make(chan error, 1)
-	go func() {
-		// Start BeginBlock and flush it
-		reqres := c.BeginBlockAsync(types.RequestBeginBlock{})
-		flush := c.FlushAsync()
-		// wait 20 ms for all events to travel socket, but
-		// no response yet from server
-		time.Sleep(20 * time.Millisecond)
-		// kill the server, so the connections break
-		err := s.Stop()
-		require.NoError(t, err)
-
-		// wait for the response from BeginBlock
-		reqres.Wait()
-		flush.Wait()
-		resp <- c.Error()
-	}()
-
-	select {
-	case <-time.After(time.Second):
-		require.Fail(t, "No response arrived")
-	case err, ok := <-resp:
-		require.True(t, ok, "Must not close channel")
-		assert.Error(t, err, "We should get EOF error")
-	}
+func (m MockApp) BeginBlock(req types.RequestBeginBlock) types.ResponseBeginBlock {
+    time.Sleep(blockDelay)
+    return types.ResponseBeginBlock{}
 }
 
-func setupClientServer(t *testing.T, app types.Application) (
-	service.Service, abcicli.Client) {
-	// some port between 20k and 30k
-	port := 20000 + cmtrand.Int32()%10000
-	addr := fmt.Sprintf("localhost:%d", port)
-
-	s, err := server.NewServer(addr, "socket", app)
-	require.NoError(t, err)
-	err = s.Start()
-	require.NoError(t, err)
-
-	c := abcicli.NewSocketClient(addr, true)
-	err = c.Start()
-	require.NoError(t, err)
-
-	return s, c
+func (m MockApp) CheckTx(r types.RequestCheckTx) types.ResponseCheckTx {
+    if m.wg != nil {
+        m.wg.Wait()
+    }
+    return m.BaseApplication.CheckTx(r)
 }
 
-type slowApp struct {
-	types.BaseApplication
+func setupTestEnvironment(t *testing.T, app types.Application) (service.Service, abcicli.Client) {
+    port := portRangeStart + bcrand.Int32()%(portRangeEnd-portRangeStart)
+    addr := fmt.Sprintf("localhost:%d", port)
+
+    server, err := server.NewServer(addr, "socket", app)
+    require.NoError(t, err, "Failed to create server")
+    
+    err = server.Start()
+    require.NoError(t, err, "Failed to start server")
+
+    client := abcicli.NewSocketClient(addr, true)
+    err = client.Start()
+    require.NoError(t, err, "Failed to start client")
+
+    return server, client
 }
 
-func (slowApp) BeginBlock(req types.RequestBeginBlock) types.ResponseBeginBlock {
-	time.Sleep(200 * time.Millisecond)
-	return types.ResponseBeginBlock{}
+func TestSyncCallsSuccess(t *testing.T) {
+    app := MockApp{}
+    server, client := setupTestEnvironment(t, app)
+    defer func() {
+        require.NoError(t, server.Stop(), "Failed to stop server")
+        require.NoError(t, client.Stop(), "Failed to stop client")
+    }()
+
+    responseChan := make(chan error, 1)
+    go func() {
+        reqRes := client.BeginBlockAsync(types.RequestBeginBlock{})
+        err := client.FlushSync()
+        if err != nil {
+            responseChan <- err
+            return
+        }
+
+        res := reqRes.Response.GetBeginBlock()
+        if res == nil {
+            responseChan <- fmt.Errorf("null begin block response")
+            return
+        }
+        responseChan <- client.Error()
+    }()
+
+    select {
+    case <-time.After(testTimeout):
+        t.Fatal("Test timed out waiting for response")
+    case err := <-responseChan:
+        assert.NoError(t, err, "Expected successful sync call")
+    }
 }
 
-// TestCallbackInvokedWhenSetLaet ensures that the callback is invoked when
-// set after the client completes the call into the app. Currently this
-// test relies on the callback being allowed to be invoked twice if set multiple
-// times, once when set early and once when set late.
-func TestCallbackInvokedWhenSetLate(t *testing.T) {
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	app := blockedABCIApplication{
-		wg: wg,
-	}
-	_, c := setupClientServer(t, app)
-	reqRes := c.CheckTxAsync(types.RequestCheckTx{})
+func TestSyncCallsFailure(t *testing.T) {
+    app := MockApp{}
+    server, client := setupTestEnvironment(t, app)
+    defer func() {
+        _ = client.Stop()
+    }()
 
-	done := make(chan struct{})
-	cb := func(_ *types.Response) {
-		close(done)
-	}
-	reqRes.SetCallback(cb)
-	app.wg.Done()
-	<-done
+    responseChan := make(chan error, 1)
+    go func() {
+        reqRes := client.BeginBlockAsync(types.RequestBeginBlock{})
+        flush := client.FlushAsync()
 
-	var called bool
-	cb = func(_ *types.Response) {
-		called = true
-	}
-	reqRes.SetCallback(cb)
-	require.True(t, called)
+        // Wait for network operations
+        time.Sleep(responseTimeout)
+
+        // Force connection failure
+        require.NoError(t, server.Stop(), "Failed to stop server")
+
+        // Wait for pending operations
+        reqRes.Wait()
+        flush.Wait()
+        responseChan <- client.Error()
+    }()
+
+    select {
+    case <-time.After(testTimeout):
+        t.Fatal("Test timed out waiting for error response")
+    case err := <-responseChan:
+        assert.Error(t, err, "Expected error due to server shutdown")
+    }
 }
 
-type blockedABCIApplication struct {
-	wg *sync.WaitGroup
-	types.BaseApplication
-}
+func TestCallbackBehavior(t *testing.T) {
+    t.Run("Late Callback", func(t *testing.T) {
+        wg := &sync.WaitGroup{}
+        wg.Add(1)
+        app := MockApp{wg: wg}
+        
+        _, client := setupTestEnvironment(t, app)
+        defer func() {
+            require.NoError(t, client.Stop(), "Failed to stop client")
+        }()
 
-func (b blockedABCIApplication) CheckTx(r types.RequestCheckTx) types.ResponseCheckTx {
-	b.wg.Wait()
-	return b.BaseApplication.CheckTx(r)
-}
+        reqRes := client.CheckTxAsync(types.RequestCheckTx{})
+        callbackChan := make(chan struct{})
+        
+        reqRes.SetCallback(func(_ *types.Response) {
+            close(callbackChan)
+        })
 
-// TestCallbackInvokedWhenSetEarly ensures that the callback is invoked when
-// set before the client completes the call into the app.
-func TestCallbackInvokedWhenSetEarly(t *testing.T) {
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	app := blockedABCIApplication{
-		wg: wg,
-	}
-	_, c := setupClientServer(t, app)
-	reqRes := c.CheckTxAsync(types.RequestCheckTx{})
+        wg.Done()
+        
+        select {
+        case <-time.After(testTimeout):
+            t.Fatal("Callback was not invoked")
+        case <-callbackChan:
+            // Success - callback was invoked
+        }
 
-	done := make(chan struct{})
-	cb := func(_ *types.Response) {
-		close(done)
-	}
-	reqRes.SetCallback(cb)
-	app.wg.Done()
+        var callbackInvoked bool
+        reqRes.SetCallback(func(_ *types.Response) {
+            callbackInvoked = true
+        })
+        assert.True(t, callbackInvoked, "Late callback should be invoked immediately")
+    })
 
-	called := func() bool {
-		select {
-		case <-done:
-			return true
-		default:
-			return false
-		}
-	}
-	require.Eventually(t, called, time.Second, time.Millisecond*25)
+    t.Run("Early Callback", func(t *testing.T) {
+        wg := &sync.WaitGroup{}
+        wg.Add(1)
+        app := MockApp{wg: wg}
+        
+        _, client := setupTestEnvironment(t, app)
+        defer func() {
+            require.NoError(t, client.Stop(), "Failed to stop client")
+        }()
+
+        reqRes := client.CheckTxAsync(types.RequestCheckTx{})
+        callbackChan := make(chan struct{})
+        
+        reqRes.SetCallback(func(_ *types.Response) {
+            close(callbackChan)
+        })
+        
+        wg.Done()
+
+        select {
+        case <-time.After(testTimeout):
+            t.Fatal("Early callback was not invoked")
+        case <-callbackChan:
+            // Success - callback was invoked
+        }
+    })
 }
