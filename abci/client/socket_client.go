@@ -195,12 +195,6 @@ func (cli *socketClient) handleResponse(res *types.Response) error {
     return nil
 }
 
-// Helper functions and methods like queueRequest, flushQueue, etc remain similar 
-// but with improved error handling and timeout management
-
-// Async methods implementation remains similar but with better error handling
-// Sync methods implementation remains similar but with better error handling
-
 func (cli *socketClient) stopForError(err error) {
     if !cli.IsRunning() {
         return
