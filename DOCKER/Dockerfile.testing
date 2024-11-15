@@ -1,53 +1,42 @@
 # syntax=docker/dockerfile:1
-
-# Base image
 FROM golang:alpine AS builder
 
-# Build arguments
 ARG BUILD_VERSION="1.0"
 ARG BUILD_DATE="2024"
 
-# Environment variables
-ENV PACKAGES="jq util-linux vim psmisc netcat-openbsd curl"
-ENV WORKSPACE="/go"
-ENV P2P_PORT=26656
-ENV RPC_PORT=26657
+ENV PACKAGES="jq util-linux vim psmisc netcat-openbsd curl git make" \
+    WORKSPACE="/baronchain" \
+    P2P_PORT=26656 \
+    RPC_PORT=26657 \
+    METRICS_PORT=26660
 
-# Install required packages
 RUN apk update && \
     apk add --no-cache ${PACKAGES} && \
-    rm -rf /var/cache/apk/*
+    rm -rf /var/cache/apk/* && \
+    addgroup -S baronchain && \
+    adduser -S -G baronchain baronchain && \
+    mkdir -p ${WORKSPACE} && \
+    chown -R baronchain:baronchain ${WORKSPACE}
 
-# Set up workspace
 WORKDIR ${WORKSPACE}
 
-# Create non-root user for better security
-RUN addgroup -S cometbft && \
-    adduser -S -G cometbft cometbft && \
-    chown -R cometbft:cometbft ${WORKSPACE}
+USER baronchain
 
-# Switch to non-root user
-USER cometbft
-
-# Volume configuration
 VOLUME ${WORKSPACE}
 
-# Expose ports
-EXPOSE ${P2P_PORT} ${RPC_PORT}
+EXPOSE ${P2P_PORT} ${RPC_PORT} ${METRICS_PORT}
 
-# Health check configuration
 HEALTHCHECK --interval=30s \
             --timeout=10s \
             --start-period=5s \
             --retries=3 \
-            CMD nc -z localhost ${RPC_PORT} || exit 1
+            CMD curl -f http://localhost:${RPC_PORT}/status || exit 1
 
-# Metadata
-LABEL org.opencontainers.image.title="BARON CHAIN CometBFT Testing" \
-      org.opencontainers.image.description="BARON CHAIN CometBFT testing environment" \
+LABEL org.opencontainers.image.title="Baron Chain Testing Environment" \
+      org.opencontainers.image.description="Baron Chain network testing environment" \
       org.opencontainers.image.version=${BUILD_VERSION} \
       org.opencontainers.image.created=${BUILD_DATE} \
-      org.opencontainers.image.authors="Baron Chain Team" \
+      org.opencontainers.image.authors="liviu@baronchain.org" \
       org.opencontainers.image.vendor="Baron Chain" \
-      org.opencontainers.image.source="https://github.com/baron/cometbft" \
-      org.opencontainers.image.documentation="https://docs.baron.chain/cometbft"
+      org.opencontainers.image.source="https://github.com/baron-chain/cometbft-bc" \
+      org.opencontainers.image.documentation="https://docs.baronchain.org"
