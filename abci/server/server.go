@@ -1,133 +1,118 @@
 /*
-Package server provides ABCI server implementations.
-
-It supports multiple transport protocols:
-  - gRPC: A high-performance RPC server using Protocol Buffers
-  - Socket: A simple TCP socket-based server
+Package server provides Baron Chain's ABCI server implementations.
+Supported transport protocols:
+  - gRPC: High-performance Protocol Buffers RPC server with quantum-safe cryptography
+  - Socket: TCP socket-based server with AI-optimized routing
 */
 package server
 
 import (
-	"errors"
-	"fmt"
-	"strings"
+    "errors"
+    "fmt"
+    "strings"
 
-	"github.com/cometbft/cometbft/abci/types"
-	"github.com/cometbft/cometbft/libs/service"
+    "github.com/baron-chain/cometbft-bc/abci/types"
+    "github.com/baron-chain/cometbft-bc/libs/service"
 )
 
-// Transport represents the server transport protocol
-type Transport string
+// BCTransport represents Baron Chain server transport protocol
+type BCTransport string
 
 const (
-	// TransportGRPC represents the gRPC transport protocol
-	TransportGRPC Transport = "grpc"
-
-	// TransportSocket represents the socket transport protocol
-	TransportSocket Transport = "socket"
+    // Transport protocols
+    TransportGRPC   BCTransport = "grpc"
+    TransportSocket BCTransport = "socket"
 )
 
-// Common errors that may be returned by the server factory
 var (
-	ErrInvalidTransport  = errors.New("invalid transport protocol")
-	ErrEmptyAddress     = errors.New("server address cannot be empty")
-	ErrNilApplication   = errors.New("application cannot be nil")
+    ErrInvalidTransport = errors.New("invalid baron chain transport protocol")
+    ErrEmptyAddress    = errors.New("baron chain server address required")
+    ErrNilApplication  = errors.New("baron chain application required")
 )
 
-// ServerOption configures how we set up the server
-type ServerOption func(*serverOptions)
+// BCServerOption configures Baron Chain server setup
+type BCServerOption func(*serverConfig)
 
-// serverOptions represents configurable server options
-type serverOptions struct {
-	grpcOptions    []GRPCOption
-	socketOptions  []SocketOption
+// serverConfig represents Baron Chain server configuration
+type serverConfig struct {
+    grpcOpts   []GRPCOption
+    socketOpts []SocketOption
 }
 
-// WithGRPCOptions sets gRPC-specific server options
-func WithGRPCOptions(opts ...GRPCOption) ServerOption {
-	return func(o *serverOptions) {
-		o.grpcOptions = append(o.grpcOptions, opts...)
-	}
+// WithGRPCConfig sets gRPC-specific server configuration
+func WithGRPCConfig(opts ...GRPCOption) BCServerOption {
+    return func(cfg *serverConfig) {
+        cfg.grpcOpts = append(cfg.grpcOpts, opts...)
+    }
 }
 
-// WithSocketOptions sets socket-specific server options
-func WithSocketOptions(opts ...SocketOption) ServerOption {
-	return func(o *serverOptions) {
-		o.socketOptions = append(o.socketOptions, opts...)
-	}
+// WithSocketConfig sets socket-specific server configuration
+func WithSocketConfig(opts ...SocketOption) BCServerOption {
+    return func(cfg *serverConfig) {
+        cfg.socketOpts = append(cfg.socketOpts, opts...)
+    }
 }
 
-// NewServer creates a new ABCI server with the specified transport.
+// NewBCServer creates a new Baron Chain ABCI server
 //
 // Parameters:
-//   - protoAddr: The protocol address to listen on (e.g., "tcp://0.0.0.0:26658")
-//   - transport: The transport protocol to use ("grpc" or "socket")
-//   - app: The ABCI application implementation
-//   - opts: Optional server configuration options
+//   - address: Server address (e.g., "tcp://0.0.0.0:26658")
+//   - transport: Transport protocol ("grpc" or "socket")
+//   - app: ABCI application implementation
+//   - opts: Optional server configurations
 //
 // Returns:
-//   - service.Service: The created server instance
-//   - error: Any error that occurred during server creation
-func NewServer(protoAddr string, transport string, app types.Application, opts ...ServerOption) (service.Service, error) {
-	if err := validateInputs(protoAddr, transport, app); err != nil {
-		return nil, err
-	}
+//   - service.Service: Server instance
+//   - error: Any initialization error
+func NewBCServer(address string, transport string, app types.Application, opts ...BCServerOption) (service.Service, error) {
+    if err := validateServerParams(address, transport, app); err != nil {
+        return nil, err
+    }
 
-	options := &serverOptions{}
-	for _, opt := range opts {
-		opt(options)
-	}
+    cfg := &serverConfig{}
+    for _, opt := range opts {
+        opt(cfg)
+    }
 
-	t := Transport(strings.ToLower(transport))
-	switch t {
-	case TransportSocket:
-		return NewSocketServer(protoAddr, app, options.socketOptions...), nil
-
-	case TransportGRPC:
-		grpcApp := types.NewGRPCApplication(app)
-		server, err := NewGRPCServer(protoAddr, grpcApp, options.grpcOptions...)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create gRPC server: %w", err)
-		}
-		return server, nil
-
-	default:
-		return nil, fmt.Errorf("%w: %s", ErrInvalidTransport, transport)
-	}
+    t := BCTransport(strings.ToLower(transport))
+    switch t {
+    case TransportSocket:
+        return NewSocketServer(address, app, cfg.socketOpts...), nil
+    case TransportGRPC:
+        grpcApp := types.NewGRPCApplication(app)
+        server, err := NewGRPCServer(address, grpcApp, cfg.grpcOpts...)
+        if err != nil {
+            return nil, fmt.Errorf("baron chain grpc server creation failed: %w", err)
+        }
+        return server, nil
+    default:
+        return nil, fmt.Errorf("%w: %s", ErrInvalidTransport, transport)
+    }
 }
 
-// validateInputs validates the server creation parameters
-func validateInputs(addr string, transport string, app types.Application) error {
-	if addr == "" {
-		return ErrEmptyAddress
-	}
-
-	if app == nil {
-		return ErrNilApplication
-	}
-
-	if transport == "" {
-		return ErrInvalidTransport
-	}
-
-	return nil
+// validateServerParams validates server initialization parameters
+func validateServerParams(addr string, transport string, app types.Application) error {
+    switch {
+    case addr == "":
+        return ErrEmptyAddress
+    case app == nil:
+        return ErrNilApplication
+    case transport == "":
+        return ErrInvalidTransport
+    }
+    return nil
 }
 
-// IsValidTransport checks if the given transport protocol is supported
-func IsValidTransport(transport string) bool {
-	t := Transport(strings.ToLower(transport))
-	switch t {
-	case TransportGRPC, TransportSocket:
-		return true
-	default:
-		return false
-	}
+// IsValidBCTransport checks if transport protocol is supported
+func IsValidBCTransport(transport string) bool {
+    t := BCTransport(strings.ToLower(transport))
+    return t == TransportGRPC || t == TransportSocket
 }
 
-// GetAvailableTransports returns a list of supported transport protocols
-func GetAvailableTransports() []string {
-	return []string{
-		string(TransportGRPC),
-		string(TransportSocket),
-	}
+// GetSupportedTransports returns available transport protocols
+func GetSupportedTransports() []string {
+    return []string{
+        string(TransportGRPC),
+        string(TransportSocket),
+    }
 }
