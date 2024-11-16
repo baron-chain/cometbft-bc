@@ -1,14 +1,14 @@
 package main
 
 import (
-	"fmt"
-	"os"
+    "fmt"
+    "os"
 )
 
+// main initializes and executes the Baron Chain CLI
 func main() {
-	err := Execute()
-	if err != nil {
-		fmt.Print(err)
-		os.Exit(1)
-	}
+    if err := Execute(); err != nil {
+        fmt.Fprintf(os.Stderr, "baron-cli error: %v\n", err)
+        os.Exit(1)
+    }
 }
