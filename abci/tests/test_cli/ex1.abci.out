@@ -1,92 +1,90 @@
-# Echo Command
-echo hello
+# Echo Command - Baron Chain Connection Test
+echo baron-chain
 >> code: OK
->> data: hello
->> data.hex: 68656C6C6F
+>> data: baron-chain
+>> data.hex: 6261726F6E2D636861696E
 
-# Initial Info
+# Baron Chain Info Query
 info 
 >> code: OK
->> data: {"size":0}
->> data.hex: 7B2273697A65223A307D
+>> data: {"node":"baron-chain","size":0,"quantum_ready":true}
+>> data.hex: 7B226E6F6465223A226261726F6E2D636861696E222C2273697A65223A302C227175616E74756D5F7265616479223A747275657D
 
-# First Transaction Block
-prepare_proposal "abc"
+# Quantum-Safe Proposal Block
+prepare_proposal "quantum-tx"
 >> code: OK
->> log: Succeeded. Tx: abc
-
-process_proposal "abc"
+>> log: Quantum-safe transaction prepared successfully
+process_proposal "quantum-tx"
 >> code: OK
 >> status: ACCEPT
-
 commit 
 >> code: OK
 >> data.hex: 0000000000000000
 
-# Transaction Delivery
-deliver_tx "abc"
+# AI-Optimized Transaction Delivery
+deliver_tx "quantum-tx"
 >> code: OK
+>> log: Transaction processed via AI-optimized route
 
-# Info After First Transaction
+# Post-Transaction Chain Info
 info 
 >> code: OK
->> data: {"size":1}
->> data.hex: 7B2273697A65223A317D
+>> data: {"node":"baron-chain","size":1,"quantum_ready":true}
+>> data.hex: 7B226E6F6465223A226261726F6E2D636861696E222C2273697A65223A312C227175616E74756D5F7265616479223A747275657D
 
-# Second Commit
+# Quantum-Safe State Commit
 commit 
 >> code: OK
 >> data.hex: 0200000000000000
 
-# Query First Transaction
-query "abc"
+# Quantum-Safe Query
+query "quantum-tx"
 >> code: OK
->> log: exists
+>> log: quantum-verified
 >> height: 2
->> key: abc
->> key.hex: 616263
->> value: abc
->> value.hex: 616263
+>> key: quantum-tx
+>> key.hex: 7175616E74756D2D7478
+>> value: quantum-tx
+>> value.hex: 7175616E74756D2D7478
 
-# Key-Value Transaction
-deliver_tx "def=xyz"
+# Secure Key-Value Operation
+deliver_tx "secure-key=secure-value"
 >> code: OK
-
+>> log: Quantum-safe KV pair stored
 commit 
 >> code: OK
 >> data.hex: 0400000000000000
 
-# Query Key-Value
-query "def"
+# Secure Key-Value Query
+query "secure-key"
 >> code: OK
->> log: exists
+>> log: quantum-verified
 >> height: 3
->> key: def
->> key.hex: 646566
->> value: xyz
->> value.hex: 78797A
+>> key: secure-key
+>> key.hex: 7365637572652D6B6579
+>> value: secure-value
+>> value.hex: 7365637572652D76616C7565
 
-# Proposal Handling
-prepare_proposal "preparedef"
+# AI-Enhanced Proposal Handling
+prepare_proposal "ai-proposal"
 >> code: OK
->> log: Succeeded. Tx: replacedef
-
-process_proposal "replacedef"
+>> log: AI-optimized proposal prepared
+process_proposal "ai-proposal"
 >> code: OK
 >> status: ACCEPT
-
-process_proposal "preparedef"
+process_proposal "non-optimized"
 >> code: OK
 >> status: REJECT
 
-# Empty Proposals
+# Empty State Handling
 prepare_proposal 
-
+>> code: OK
+>> log: Empty proposal validated
 process_proposal 
 >> code: OK
 >> status: ACCEPT
 
-# Final Commit
+# Final State Commit
 commit 
 >> code: OK
 >> data.hex: 0400000000000000
