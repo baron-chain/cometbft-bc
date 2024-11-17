@@ -1,252 +1,256 @@
 package tests
 
 import (
-	"context"
-	"fmt"
-	"net"
-	"testing"
-	"time"
+    "context"
+    "fmt"
+    "net"
+    "testing"
+    "time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+    "github.com/stretchr/testify/assert"
+    "github.com/stretchr/testify/require"
 
-	abciclient "github.com/cometbft/cometbft/abci/client"
-	"github.com/cometbft/cometbft/abci/example/kvstore"
-	abciserver "github.com/cometbft/cometbft/abci/server"
-	"github.com/cometbft/cometbft/abci/types"
+    bclient "github.com/baron-chain/cometbft-bc/abci/client"
+    "github.com/baron-chain/cometbft-bc/abci/example/kvstore"
+    bserver "github.com/baron-chain/cometbft-bc/abci/server"
+    "github.com/baron-chain/cometbft-bc/abci/types"
 )
 
 const (
-	testTimeout      = 10 * time.Second
-	defaultPort      = 26658
-	defaultHost      = "localhost"
-	defaultTransport = "socket"
+    testTimeout  = 10 * time.Second
+    defaultPort  = 26658
+    defaultHost  = "localhost"
+    bcTransport  = "socket"
+    dialTimeout  = 10 * time.Millisecond
 )
 
-type testSetup struct {
-	t         *testing.T
-	app       types.Application
-	server    abciserver.Service
-	client    abciclient.Client
-	transport string
-	addr      string
-	ctx       context.Context
-	cancel    context.CancelFunc
+// BCTestEnv represents Baron Chain test environment
+type BCTestEnv struct {
+    t         *testing.T
+    app       types.Application
+    server    bserver.Service
+    client    bclient.Client
+    transport string
+    addr      string
+    ctx       context.Context
+    cancel    context.CancelFunc
 }
 
-func newTestSetup(t *testing.T, opts ...testOption) *testSetup {
-	t.Helper()
+// BCTestOption configures test environment
+type BCTestOption func(*BCTestEnv)
 
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+// Create new Baron Chain test environment
+func newBCTestEnv(t *testing.T, opts ...BCTestOption) *BCTestEnv {
+    t.Helper()
 
-	ts := &testSetup{
-		t:         t,
-		app:       kvstore.NewApplication(),
-		transport: defaultTransport,
-		addr:      fmt.Sprintf("%s:%d", defaultHost, defaultPort),
-		ctx:       ctx,
-		cancel:    cancel,
-	}
+    ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 
-	for _, opt := range opts {
-		opt(ts)
-	}
+    env := &BCTestEnv{
+        t:         t,
+        app:       kvstore.NewApplication(),
+        transport: bcTransport,
+        addr:      fmt.Sprintf("%s:%d", defaultHost, defaultPort),
+        ctx:       ctx,
+        cancel:    cancel,
+    }
 
-	return ts
+    for _, opt := range opts {
+        opt(env)
+    }
+
+    return env
 }
 
-type testOption func(*testSetup)
-
-func withTransport(transport string) testOption {
-	return func(ts *testSetup) {
-		ts.transport = transport
-	}
+// Test environment configuration options
+func withBCTransport(transport string) BCTestOption {
+    return func(env *BCTestEnv) {
+        env.transport = transport
+    }
 }
 
-func withAddress(addr string) testOption {
-	return func(ts *testSetup) {
-		ts.addr = addr
-	}
+func withBCAddress(addr string) BCTestOption {
+    return func(env *BCTestEnv) {
+        env.addr = addr
+    }
 }
 
-func withApplication(app types.Application) testOption {
-	return func(ts *testSetup) {
-		ts.app = app
-	}
+func withBCApplication(app types.Application) BCTestOption {
+    return func(env *BCTestEnv) {
+        env.app = app
+    }
 }
 
-func (ts *testSetup) start() {
-	ts.t.Helper()
+// Start Baron Chain test environment
+func (env *BCTestEnv) start() {
+    env.t.Helper()
 
-	// Start server
-	server, err := abciserver.NewServer(ts.addr, ts.transport, ts.app)
-	require.NoError(ts.t, err, "creating server")
-	ts.server = server
+    server, err := bserver.NewServer(env.addr, env.transport, env.app)
+    require.NoError(env.t, err, "failed to create Baron Chain server")
+    env.server = server
 
-	err = server.Start()
-	require.NoError(ts.t, err, "starting server")
+    require.NoError(env.t, server.Start(), "failed to start Baron Chain server")
 
-	// Wait for server to be ready
-	require.Eventually(ts.t, func() bool {
-		conn, err := net.Dial("tcp", ts.addr)
-		if err != nil {
-			return false
-		}
-		conn.Close()
-		return true
-	}, testTimeout, 10*time.Millisecond, "waiting for server")
+    // Wait for server readiness
+    require.Eventually(env.t, 
+        func() bool {
+            conn, err := net.DialTimeout("tcp", env.addr, dialTimeout)
+            if err != nil {
+                return false
+            }
+            conn.Close()
+            return true
+        },
+        testTimeout,
+        dialTimeout,
+        "Baron Chain server not ready",
+    )
 
-	// Start client
-	client, err := abciclient.NewClient(ts.addr, ts.transport, true)
-	require.NoError(ts.t, err, "creating client")
-	ts.client = client
+    // Initialize client
+    client, err := bclient.NewClient(env.addr, env.transport, true)
+    require.NoError(env.t, err, "failed to create Baron Chain client")
+    env.client = client
 
-	err = client.Start()
-	require.NoError(ts.t, err, "starting client")
+    require.NoError(env.t, client.Start(), "failed to start Baron Chain client")
 }
 
-func (ts *testSetup) stop() {
-	ts.t.Helper()
+// Stop Baron Chain test environment
+func (env *BCTestEnv) stop() {
+    env.t.Helper()
 
-	if ts.client != nil {
-		err := ts.client.Stop()
-		assert.NoError(ts.t, err, "stopping client")
-	}
+    if env.client != nil {
+        assert.NoError(env.t, env.client.Stop(), "failed to stop Baron Chain client")
+    }
 
-	if ts.server != nil {
-		err := ts.server.Stop()
-		assert.NoError(ts.t, err, "stopping server")
-	}
+    if env.server != nil {
+        assert.NoError(env.t, env.server.Stop(), "failed to stop Baron Chain server")
+    }
 
-	ts.cancel()
+    env.cancel()
 }
 
-func TestClientServer(t *testing.T) {
-	testCases := []struct {
-		name      string
-		transport string
-		addr      string
-	}{
-		{
-			name:      "Socket transport with no prefix",
-			transport: "socket",
-			addr:      "localhost:26658",
-		},
-		{
-			name:      "Socket transport with tcp prefix",
-			transport: "socket",
-			addr:      "tcp://localhost:26659",
-		},
-		{
-			name:      "GRPC transport with no prefix",
-			transport: "grpc",
-			addr:      "localhost:26660",
-		},
-		{
-			name:      "GRPC transport with tcp prefix",
-			transport: "grpc",
-			addr:      "tcp://localhost:26661",
-		},
-	}
+func TestBaronChainClientServer(t *testing.T) {
+    testCases := []struct {
+        name      string
+        transport string
+        addr      string
+    }{
+        {
+            name:      "Socket Direct",
+            transport: "socket",
+            addr:      "localhost:26658",
+        },
+        {
+            name:      "Socket TCP",
+            transport: "socket", 
+            addr:      "tcp://localhost:26659",
+        },
+        {
+            name:      "GRPC Direct",
+            transport: "grpc",
+            addr:      "localhost:26660",
+        },
+        {
+            name:      "GRPC TCP",
+            transport: "grpc",
+            addr:      "tcp://localhost:26661",
+        },
+    }
 
-	for _, tc := range testCases {
-		tc := tc // capture range variable
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+    for _, tc := range testCases {
+        tc := tc
+        t.Run(tc.name, func(t *testing.T) {
+            t.Parallel()
 
-			ts := newTestSetup(t,
-				withTransport(tc.transport),
-				withAddress(tc.addr),
-			)
-			defer ts.stop()
+            env := newBCTestEnv(t,
+                withBCTransport(tc.transport),
+                withBCAddress(tc.addr),
+            )
+            defer env.stop()
 
-			ts.start()
-
-			// Test basic connectivity
-			testBasicConnectivity(t, ts)
-		})
-	}
+            env.start()
+            testBCConnectivity(t, env)
+        })
+    }
 }
 
-func testBasicConnectivity(t *testing.T, ts *testSetup) {
-	t.Helper()
+func testBCConnectivity(t *testing.T, env *BCTestEnv) {
+    t.Helper()
 
-	// Test Info call
-	res, err := ts.client.InfoSync(types.RequestInfo{Version: "1.0.0"})
-	require.NoError(t, err, "InfoSync call")
-	assert.NotNil(t, res, "InfoSync response")
+    // Test Info
+    res, err := env.client.InfoSync(types.RequestInfo{Version: "1.0.0"})
+    require.NoError(t, err, "Baron Chain Info request failed")
+    assert.NotNil(t, res, "Baron Chain Info response empty")
 
-	// Test Echo call
-	testMessage := "Hello ABCI"
-	res2, err := ts.client.EchoSync(testMessage)
-	require.NoError(t, err, "EchoSync call")
-	assert.Equal(t, testMessage, res2.Message, "Echo response")
+    // Test Echo
+    msg := "Baron Chain Test"
+    res2, err := env.client.EchoSync(msg)
+    require.NoError(t, err, "Baron Chain Echo request failed")
+    assert.Equal(t, msg, res2.Message, "Baron Chain Echo response mismatch")
 
-	// Test Flush
-	err = ts.client.FlushSync()
-	require.NoError(t, err, "FlushSync call")
+    // Test Flush
+    require.NoError(t, env.client.FlushSync(), "Baron Chain Flush failed")
 }
 
-func TestClientServerErrors(t *testing.T) {
-	testCases := []struct {
-		name        string
-		transport   string
-		addr        string
-		expectedErr string
-	}{
-		{
-			name:        "Invalid transport",
-			transport:   "invalid",
-			addr:        "localhost:26658",
-			expectedErr: "unknown server type invalid",
-		},
-		{
-			name:        "Invalid address",
-			transport:   "socket",
-			addr:        "invalid:address",
-			expectedErr: "listen tcp: address invalid:address: missing port in address",
-		},
-	}
+func TestBaronChainErrors(t *testing.T) {
+    testCases := []struct {
+        name        string
+        transport   string
+        addr        string
+        expectError string
+    }{
+        {
+            name:        "Invalid Transport",
+            transport:   "invalid",
+            addr:       "localhost:26658",
+            expectError: "unknown server type invalid",
+        },
+        {
+            name:        "Invalid Address",
+            transport:   "socket",
+            addr:        "invalid:address",
+            expectError: "listen tcp: address invalid:address: missing port in address",
+        },
+    }
 
-	for _, tc := range testCases {
-		tc := tc // capture range variable
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+    for _, tc := range testCases {
+        tc := tc
+        t.Run(tc.name, func(t *testing.T) {
+            t.Parallel()
 
-			_, err := abciserver.NewServer(tc.addr, tc.transport, kvstore.NewApplication())
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), tc.expectedErr)
-		})
-	}
+            _, err := bserver.NewServer(tc.addr, tc.transport, kvstore.NewApplication())
+            assert.Error(t, err)
+            assert.Contains(t, err.Error(), tc.expectError)
+        })
+    }
 }
 
-func TestClientServerConcurrency(t *testing.T) {
-	ts := newTestSetup(t)
-	defer ts.stop()
+func TestBaronChainConcurrency(t *testing.T) {
+    env := newBCTestEnv(t)
+    defer env.stop()
 
-	ts.start()
+    env.start()
 
-	const numGoroutines = 10
-	const numRequests = 100
+    const numRoutines = 10
+    const numRequests = 100
 
-	errCh := make(chan error, numGoroutines*numRequests)
+    errors := make(chan error, numRoutines*numRequests)
 
-	for i := 0; i < numGoroutines; i++ {
-		go func() {
-			for j := 0; j < numRequests; j++ {
-				msg := fmt.Sprintf("test-%d", j)
-				_, err := ts.client.EchoSync(msg)
-				errCh <- err
-			}
-		}()
-	}
+    for i := 0; i < numRoutines; i++ {
+        go func() {
+            for j := 0; j < numRequests; j++ {
+                msg := fmt.Sprintf("baron-test-%d", j)
+                _, err := env.client.EchoSync(msg)
+                errors <- err
+            }
+        }()
+    }
 
-	for i := 0; i < numGoroutines*numRequests; i++ {
-		select {
-		case err := <-errCh:
-			assert.NoError(t, err, "concurrent request")
-		case <-time.After(testTimeout):
-			t.Fatal("timeout waiting for concurrent requests")
-		}
-	}
+    for i := 0; i < numRoutines*numRequests; i++ {
+        select {
+        case err := <-errors:
+            assert.NoError(t, err, "Baron Chain concurrent request failed")
+        case <-time.After(testTimeout):
+            t.Fatal("Baron Chain concurrent test timeout")
+        }
+    }
 }
