@@ -1,111 +1,206 @@
 package testsuite
 
 import (
-	"bytes"
-	"errors"
-	"fmt"
-
-	abcicli "github.com/cometbft/cometbft/abci/client"
-	"github.com/cometbft/cometbft/abci/types"
-	cmtrand "github.com/cometbft/cometbft/libs/rand"
+    "bytes"
+    "errors"
+    "fmt"
+    
+    abcicli "github.com/baron-chain/cometbft-bc/abci/client"
+    "github.com/baron-chain/cometbft-bc/abci/types"
+    bcrand "github.com/baron-chain/cometbft-bc/libs/rand"
 )
 
-func InitChain(client abcicli.Client) error {
-	total := 10
-	vals := make([]types.ValidatorUpdate, total)
-	for i := 0; i < total; i++ {
-		pubkey := cmtrand.Bytes(33)
-		power := cmtrand.Int()
-		vals[i] = types.UpdateValidator(pubkey, int64(power), "")
-	}
-	_, err := client.InitChainSync(types.RequestInitChain{
-		Validators: vals,
-	})
-	if err != nil {
-		fmt.Printf("Failed test: InitChain - %v\n", err)
-		return err
-	}
-	fmt.Println("Passed test: InitChain")
-	return nil
+var (
+    ErrInitChain        = errors.New("baron chain init chain failed")
+    ErrCommit          = errors.New("baron chain commit failed")
+    ErrDeliverTx       = errors.New("baron chain delivery failed")
+    ErrCheckTx         = errors.New("baron chain validation failed")
+    ErrPrepareProposal = errors.New("baron chain proposal preparation failed")
+    ErrProcessProposal = errors.New("baron chain proposal processing failed")
+)
+
+// TestResult represents a test case result
+type TestResult struct {
+    Success bool
+    Error   error
+    Message string
 }
 
-func Commit(client abcicli.Client, hashExp []byte) error {
-	res, err := client.CommitSync()
-	data := res.Data
-	if err != nil {
-		fmt.Println("Failed test: Commit")
-		fmt.Printf("error while committing: %v\n", err)
-		return err
-	}
-	if !bytes.Equal(data, hashExp) {
-		fmt.Println("Failed test: Commit")
-		fmt.Printf("Commit hash was unexpected. Got %X expected %X\n", data, hashExp)
-		return errors.New("commitTx failed")
-	}
-	fmt.Println("Passed test: Commit")
-	return nil
+// InitChain initializes the Baron Chain validator set
+func InitChain(client abcicli.Client) TestResult {
+    // Generate random validator set
+    validators := generateValidators(10)
+    
+    resp, err := client.InitChainSync(types.RequestInitChain{
+        Validators: validators,
+    })
+
+    if err != nil {
+        return TestResult{
+            Success: false,
+            Error:   fmt.Errorf("%w: %v", ErrInitChain, err),
+            Message: "validator initialization failed",
+        }
+    }
+
+    return TestResult{
+        Success: true,
+        Message: "validator set initialized successfully",
+    }
 }
 
-func DeliverTx(client abcicli.Client, txBytes []byte, codeExp uint32, dataExp []byte) error {
-	res, _ := client.DeliverTxSync(types.RequestDeliverTx{Tx: txBytes})
-	code, data, log := res.Code, res.Data, res.Log
-	if code != codeExp {
-		fmt.Println("Failed test: DeliverTx")
-		fmt.Printf("DeliverTx response code was unexpected. Got %v expected %v. Log: %v\n",
-			code, codeExp, log)
-		return errors.New("deliverTx error")
-	}
-	if !bytes.Equal(data, dataExp) {
-		fmt.Println("Failed test: DeliverTx")
-		fmt.Printf("DeliverTx response data was unexpected. Got %X expected %X\n",
-			data, dataExp)
-		return errors.New("deliverTx error")
-	}
-	fmt.Println("Passed test: DeliverTx")
-	return nil
+// Commit verifies Baron Chain block commitment
+func Commit(client abcicli.Client, expectedHash []byte) TestResult {
+    resp, err := client.CommitSync()
+    if err != nil {
+        return TestResult{
+            Success: false,
+            Error:   fmt.Errorf("%w: %v", ErrCommit, err),
+            Message: "commit failed",
+        }
+    }
+
+    if !bytes.Equal(resp.Data, expectedHash) {
+        return TestResult{
+            Success: false,
+            Error:   ErrCommit,
+            Message: fmt.Sprintf("hash mismatch - got: %X, want: %X", resp.Data, expectedHash),
+        }
+    }
+
+    return TestResult{
+        Success: true,
+        Message: "block committed successfully",
+    }
 }
 
-func PrepareProposal(client abcicli.Client, txBytes [][]byte, txExpected [][]byte, dataExp []byte) error {
-	res, _ := client.PrepareProposalSync(types.RequestPrepareProposal{Txs: txBytes})
-	for i, tx := range res.Txs {
-		if !bytes.Equal(tx, txExpected[i]) {
-			fmt.Println("Failed test: PrepareProposal")
-			fmt.Printf("PrepareProposal transaction was unexpected. Got %x expected %x.",
-				tx, txExpected[i])
-			return errors.New("PrepareProposal error")
-		}
-	}
-	fmt.Println("Passed test: PrepareProposal")
-	return nil
+// DeliverTx tests Baron Chain transaction delivery
+func DeliverTx(client abcicli.Client, tx []byte, expectCode uint32, expectData []byte) TestResult {
+    resp, err := client.DeliverTxSync(types.RequestDeliverTx{Tx: tx})
+    if err != nil {
+        return TestResult{
+            Success: false,
+            Error:   fmt.Errorf("%w: %v", ErrDeliverTx, err),
+            Message: "delivery failed",
+        }
+    }
+
+    if resp.Code != expectCode {
+        return TestResult{
+            Success: false,
+            Error:   ErrDeliverTx,
+            Message: fmt.Sprintf("code mismatch - got: %d, want: %d, log: %s", 
+                               resp.Code, expectCode, resp.Log),
+        }
+    }
+
+    if !bytes.Equal(resp.Data, expectData) {
+        return TestResult{
+            Success: false,
+            Error:   ErrDeliverTx,
+            Message: fmt.Sprintf("data mismatch - got: %X, want: %X", resp.Data, expectData),
+        }
+    }
+
+    return TestResult{
+        Success: true,
+        Message: "transaction delivered successfully",
+    }
 }
 
-func ProcessProposal(client abcicli.Client, txBytes [][]byte, statusExp types.ResponseProcessProposal_ProposalStatus) error {
-	res, _ := client.ProcessProposalSync(types.RequestProcessProposal{Txs: txBytes})
-	if res.Status != statusExp {
-		fmt.Println("Failed test: ProcessProposal")
-		fmt.Printf("ProcessProposal response status was unexpected. Got %v expected %v.",
-			res.Status, statusExp)
-		return errors.New("ProcessProposal error")
-	}
-	fmt.Println("Passed test: ProcessProposal")
-	return nil
+// PrepareProposal tests Baron Chain proposal preparation
+func PrepareProposal(client abcicli.Client, txs [][]byte, expectedTxs [][]byte, expectData []byte) TestResult {
+    resp, err := client.PrepareProposalSync(types.RequestPrepareProposal{Txs: txs})
+    if err != nil {
+        return TestResult{
+            Success: false,
+            Error:   fmt.Errorf("%w: %v", ErrPrepareProposal, err),
+            Message: "proposal preparation failed",
+        }
+    }
+
+    for i, tx := range resp.Txs {
+        if !bytes.Equal(tx, expectedTxs[i]) {
+            return TestResult{
+                Success: false,
+                Error:   ErrPrepareProposal,
+                Message: fmt.Sprintf("tx mismatch at index %d - got: %X, want: %X", i, tx, expectedTxs[i]),
+            }
+        }
+    }
+
+    return TestResult{
+        Success: true,
+        Message: "proposal prepared successfully",
+    }
 }
 
-func CheckTx(client abcicli.Client, txBytes []byte, codeExp uint32, dataExp []byte) error {
-	res, _ := client.CheckTxSync(types.RequestCheckTx{Tx: txBytes})
-	code, data, log := res.Code, res.Data, res.Log
-	if code != codeExp {
-		fmt.Println("Failed test: CheckTx")
-		fmt.Printf("CheckTx response code was unexpected. Got %v expected %v. Log: %v\n",
-			code, codeExp, log)
-		return errors.New("checkTx")
-	}
-	if !bytes.Equal(data, dataExp) {
-		fmt.Println("Failed test: CheckTx")
-		fmt.Printf("CheckTx response data was unexpected. Got %X expected %X\n",
-			data, dataExp)
-		return errors.New("checkTx")
-	}
-	fmt.Println("Passed test: CheckTx")
-	return nil
+// ProcessProposal tests Baron Chain proposal processing
+func ProcessProposal(client abcicli.Client, txs [][]byte, expectStatus types.ResponseProcessProposal_ProposalStatus) TestResult {
+    resp, err := client.ProcessProposalSync(types.RequestProcessProposal{Txs: txs})
+    if err != nil {
+        return TestResult{
+            Success: false,
+            Error:   fmt.Errorf("%w: %v", ErrProcessProposal, err),
+            Message: "proposal processing failed",
+        }
+    }
+
+    if resp.Status != expectStatus {
+        return TestResult{
+            Success: false,
+            Error:   ErrProcessProposal,
+            Message: fmt.Sprintf("status mismatch - got: %v, want: %v", resp.Status, expectStatus),
+        }
+    }
+
+    return TestResult{
+        Success: true,
+        Message: "proposal processed successfully",
+    }
+}
+
+// CheckTx tests Baron Chain transaction validation
+func CheckTx(client abcicli.Client, tx []byte, expectCode uint32, expectData []byte) TestResult {
+    resp, err := client.CheckTxSync(types.RequestCheckTx{Tx: tx})
+    if err != nil {
+        return TestResult{
+            Success: false,
+            Error:   fmt.Errorf("%w: %v", ErrCheckTx, err),
+            Message: "validation failed",
+        }
+    }
+
+    if resp.Code != expectCode {
+        return TestResult{
+            Success: false,
+            Error:   ErrCheckTx,
+            Message: fmt.Sprintf("code mismatch - got: %d, want: %d, log: %s", 
+                               resp.Code, expectCode, resp.Log),
+        }
+    }
+
+    if !bytes.Equal(resp.Data, expectData) {
+        return TestResult{
+            Success: false,
+            Error:   ErrCheckTx,
+            Message: fmt.Sprintf("data mismatch - got: %X, want: %X", resp.Data, expectData),
+        }
+    }
+
+    return TestResult{
+        Success: true,
+        Message: "transaction validated successfully",
+    }
+}
+
+// Helper function to generate random validator set
+func generateValidators(count int) []types.ValidatorUpdate {
+    validators := make([]types.ValidatorUpdate, count)
+    for i := 0; i < count; i++ {
+        pubkey := bcrand.Bytes(33)
+        power := bcrand.Int()
+        validators[i] = types.UpdateValidator(pubkey, int64(power), "")
+    }
+    return validators
 }
