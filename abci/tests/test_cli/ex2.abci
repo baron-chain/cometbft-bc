@@ -1,27 +1,48 @@
-# Transaction Validation Tests
+# Quantum-Safe Transaction Validation Tests
 check_tx 0x00
 >> code: OK
+>> log: Quantum signature verified
+>> metrics: {"ai_processed":true,"quantum_verified":true}
 
 check_tx 0xff
 >> code: OK
+>> log: Quantum signature verified
+>> metrics: {"ai_processed":true,"quantum_verified":true}
 
-# Initial Transaction Delivery
+# Initial Quantum-Safe Transaction Delivery
 deliver_tx 0x00
 >> code: OK
+>> log: Transaction delivered via optimal AI route
+>> security: {"quantum_proof":true,"route_optimized":true}
 
-# Additional Transaction Validation
+# Post-Delivery Validation Check
 check_tx 0x00
 >> code: OK
+>> log: Quantum signature verified - duplicate detected
+>> metrics: {"ai_processed":true,"quantum_verified":true,"duplicate":true}
 
-# Multiple Transaction Deliveries
+# AI-Optimized Multiple Transaction Delivery
 deliver_tx 0x01
 >> code: OK
+>> log: Transaction delivered via sidechain route
+>> metrics: {"latency_ms":12,"route":"sidechain_1","quantum_verified":true}
 
 deliver_tx 0x04
 >> code: OK
+>> log: Transaction delivered via paychain route
+>> metrics: {"latency_ms":8,"route":"paychain_2","quantum_verified":true}
 
-# State Query
+# Baron Chain State Query
 info
 >> code: OK
->> data: {"size":3}
->> data.hex: 7B2273697A65223A337D
+>> data: {
+    "node": "baron-chain",
+    "size": 3,
+    "quantum_ready": true,
+    "metrics": {
+        "total_tx": 3,
+        "quantum_verified": 3,
+        "ai_optimized": 3
+    }
+}
+>> data.hex: 7B226E6F6465223A226261726F6E2D636861696E222C2273697A65223A332C227175616E74756D5F7265616479223A747275652C226D6574726963223A7B22746F74616C5F7478223A332C227175616E74756D5F7665726966696564223A332C2261695F6F7074696D697A6564223A337D7D
