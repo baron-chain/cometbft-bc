@@ -4,67 +4,66 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-# Script constants
-readonly TIMEOUT_SECONDS=10
-readonly LOG_LEVEL="error"
-readonly WAIT_TIME=2
-readonly SUCCESS_MSG="\e[32mPASS\e[0m"
-readonly ERROR_MSG="\e[31mERROR\e[0m"
+# Baron Chain test constants
+readonly BC_TIMEOUT=10
+readonly BC_LOG_LEVEL="error"
+readonly BC_WAIT_TIME=2
+readonly BC_SUCCESS="\e[32mBaron Chain Test PASSED\e[0m"
+readonly BC_ERROR="\e[31mBaron Chain Test FAILED\e[0m"
 
-# Initialize variables
+# Environment setup
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-TEMP_DIR="/tmp/abci-tests-$$"
+TEMP_DIR="/tmp/baron-chain-tests-$$"
 PIDS=()
 
-# Logging functions
-log_info() {
-    printf "\e[34m[INFO]\e[0m %s\n" "$1"
+# Logging utilities
+bc_log_info() {
+    printf "\e[34m[BARON]\e[0m %s\n" "$1"
 }
 
-log_error() {
-    printf "\e[31m[ERROR]\e[0m %s\n" "$1" >&2
+bc_log_error() {
+    printf "\e[31m[BARON ERROR]\e[0m %s\n" "$1" >&2
 }
 
-log_success() {
-    printf "\e[32m[SUCCESS]\e[0m %s\n" "$1"
+bc_log_success() {
+    printf "\e[32m[BARON SUCCESS]\e[0m %s\n" "$1"
 }
 
-# Cleanup function
-cleanup() {
+# Cleanup handler
+bc_cleanup() {
     local exit_code=$?
-    log_info "Performing cleanup..."
+    bc_log_info "Cleaning up Baron Chain test environment..."
 
-    # Kill any remaining processes
+    # Terminate test processes
     for pid in "${PIDS[@]:-}"; do
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
         fi
     done
 
-    # Remove temporary files
+    # Clean test artifacts
     if [[ -d "${TEMP_DIR}" ]]; then
         rm -rf "${TEMP_DIR}"
     fi
 
-    # Remove any .out.new files
+    # Remove test outputs
     find "${ROOT_DIR}" -name "*.out.new" -delete
 
     if [[ $exit_code -eq 0 ]]; then
-        echo -e "${SUCCESS_MSG}"
+        echo -e "${BC_SUCCESS}"
     else
-        echo -e "${ERROR_MSG} Test script failed"
+        echo -e "${BC_ERROR}"
     fi
 
     exit "$exit_code"
 }
 
-# Set up trap for cleanup
-trap cleanup EXIT INT TERM
+trap bc_cleanup EXIT INT TERM
 
-# Check required commands
-check_dependencies() {
-    local deps=(abci-cli shasum diff)
+# Dependency verification
+bc_check_deps() {
+    local deps=(baron-cli shasum diff)
     local missing=()
 
     for cmd in "${deps[@]}"; do
@@ -74,20 +73,20 @@ check_dependencies() {
     done
 
     if [[ ${#missing[@]} -gt 0 ]]; then
-        log_error "Missing required dependencies: ${missing[*]}"
+        bc_log_error "Missing Baron Chain dependencies: ${missing[*]}"
         exit 1
     fi
 }
 
-# Verify the application starts successfully
-wait_for_app() {
-    local app_name="$1"
+# Baron Chain node readiness check
+bc_wait_for_node() {
+    local node_name="$1"
     local pid="$2"
-    local timeout="$TIMEOUT_SECONDS"
+    local timeout="$BC_TIMEOUT"
 
     while [[ $timeout -gt 0 ]]; do
         if ! kill -0 "$pid" 2>/dev/null; then
-            log_error "$app_name failed to start"
+            bc_log_error "Baron Chain node $node_name failed to start"
             exit 1
         fi
         if lsof -i :26658 >/dev/null 2>&1; then
@@ -97,87 +96,83 @@ wait_for_app() {
         ((timeout--))
     done
 
-    log_error "$app_name failed to start within $TIMEOUT_SECONDS seconds"
+    bc_log_error "Baron Chain node $node_name startup timeout after $BC_TIMEOUT seconds"
     exit 1
 }
 
-# Test a single example
-test_example() {
-    local number="$1"
+# Test execution
+bc_run_test() {
+    local test_num="$1"
     local input="$2"
-    local app_cmd="$3"
-    local app_args="${4:-}"
-    local app_name
-    app_name=$(basename "$app_cmd")
+    local node_cmd="$3"
+    local node_args="${4:-}"
+    local node_name
+    node_name=$(basename "$node_cmd")
 
-    log_info "Testing Example ${number}: ${app_cmd} ${app_args}"
+    bc_log_info "Running Baron Chain Test ${test_num}: ${node_cmd} ${node_args}"
 
-    # Validate input file
+    # Validate test input
     if [[ ! -f "${input}" ]]; then
-        log_error "Input file not found: ${input}"
+        bc_log_error "Baron Chain test file not found: ${input}"
         exit 1
     }
 
-    # Start the application
-    ${app_cmd} ${app_args} &>/dev/null &
+    # Launch node
+    ${node_cmd} ${node_args} &>/dev/null &
     local pid=$!
     PIDS+=("$pid")
 
-    # Wait for app to start
-    wait_for_app "$app_name" "$pid"
+    # Verify node startup
+    bc_wait_for_node "$node_name" "$pid"
 
-    # Create output directory if it doesn't exist
+    # Setup test output
     mkdir -p "${TEMP_DIR}"
-    local temp_output="${TEMP_DIR}/$(basename "${input}").out.new"
+    local test_output="${TEMP_DIR}/$(basename "${input}").out.new"
 
-    # Run the test
-    if ! abci-cli \
-        --log_level="${LOG_LEVEL}" \
+    # Execute test
+    if ! baron-cli \
+        --log_level="${BC_LOG_LEVEL}" \
         --verbose \
-        batch < "${input}" > "${temp_output}"; then
-        log_error "abci-cli command failed"
+        batch < "${input}" > "${test_output}"; then
+        bc_log_error "Baron Chain CLI test failed"
         exit 1
-    fi
+    }
 
-    # Compare outputs
-    local expected_output="${input}.out"
-    if ! cmp -s "${expected_output}" "${temp_output}"; then
-        log_error "Example ${number} failed: Output mismatch"
-        echo "Got:"
-        cat "${temp_output}"
-        echo "Expected:"
-        cat "${expected_output}"
-        echo "Diff:"
-        diff "${expected_output}" "${temp_output}" || true
+    # Verify test results
+    local expected="${input}.out"
+    if ! cmp -s "${expected}" "${test_output}"; then
+        bc_log_error "Baron Chain Test ${test_num} failed: Output mismatch"
+        echo "Actual Output:"
+        cat "${test_output}"
+        echo "Expected Output:"
+        cat "${expected}"
+        echo "Differences:"
+        diff "${expected}" "${test_output}" || true
         exit 1
-    fi
+    }
 
-    # Cleanup
+    # Cleanup test
     kill "$pid" || true
     wait "$pid" 2>/dev/null || true
-    rm -f "${temp_output}"
+    rm -f "${test_output}"
 
-    log_success "Example ${number} passed"
+    bc_log_success "Baron Chain Test ${test_num} completed successfully"
 }
 
 main() {
-    # Change to root directory
     cd "${ROOT_DIR}" || exit 1
+    bc_check_deps
 
-    # Check dependencies
-    check_dependencies
-
-    # Ensure GOBIN is in PATH
+    # Ensure Baron Chain binaries are available
     if [[ -n "${GOBIN:-}" ]]; then
         export PATH="$GOBIN:$PATH"
     fi
 
-    # Run tests
-    test_example 1 "tests/test_cli/ex1.abci" "abci-cli" "kvstore"
-    test_example 2 "tests/test_cli/ex2.abci" "abci-cli" "kvstore"
+    # Execute Baron Chain test suite
+    bc_run_test 1 "tests/baron_chain/quantum_test.abci" "baron-cli" "kvstore"
+    bc_run_test 2 "tests/baron_chain/ai_routing_test.abci" "baron-cli" "kvstore"
 
-    log_success "All tests passed!"
+    bc_log_success "Baron Chain test suite completed successfully!"
 }
 
-# Run main function
 main "$@"
