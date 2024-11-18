@@ -5,7 +5,7 @@ import (
     "encoding/json"
     "sync"
     
-    "github.com/cosmos/gogoproto/jsonpb"
+    "github.com/baron-chain/gogoproto-bc/jsonpb"
 )
 
 const (
