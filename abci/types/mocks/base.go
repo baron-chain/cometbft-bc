@@ -23,165 +23,117 @@ func NewBaseMock() BaseMock {
 	}
 }
 
-// Info/Query Connection
-// Return application info
-func (m BaseMock) Info(input types.RequestInfo) types.ResponseInfo {
-	var ret types.ResponseInfo
+// withFallback is a helper function that executes an Application method and falls back
+// to the base implementation if the Application method panics.
+func (m BaseMock) withFallback[T any](appMethod func() T, baseMethod func() T) T {
+	var ret T
 	defer func() {
 		if r := recover(); r != nil {
-			ret = m.base.Info(input)
+			ret = baseMethod()
 		}
 	}()
-	ret = m.Application.Info(input)
+	ret = appMethod()
 	return ret
+}
+
+// Info/Query Connection
+func (m BaseMock) Info(input types.RequestInfo) types.ResponseInfo {
+	return m.withFallback(
+		func() types.ResponseInfo { return m.Application.Info(input) },
+		func() types.ResponseInfo { return m.base.Info(input) },
+	)
 }
 
 func (m BaseMock) Query(input types.RequestQuery) types.ResponseQuery {
-	var ret types.ResponseQuery
-	defer func() {
-		if r := recover(); r != nil {
-			ret = m.base.Query(input)
-		}
-	}()
-	ret = m.Application.Query(input)
-	return ret
+	return m.withFallback(
+		func() types.ResponseQuery { return m.Application.Query(input) },
+		func() types.ResponseQuery { return m.base.Query(input) },
+	)
 }
 
 // Mempool Connection
-// Validate a tx for the mempool
 func (m BaseMock) CheckTx(input types.RequestCheckTx) types.ResponseCheckTx {
-	var ret types.ResponseCheckTx
-	defer func() {
-		if r := recover(); r != nil {
-			ret = m.base.CheckTx(input)
-		}
-	}()
-	ret = m.Application.CheckTx(input)
-	return ret
+	return m.withFallback(
+		func() types.ResponseCheckTx { return m.Application.CheckTx(input) },
+		func() types.ResponseCheckTx { return m.base.CheckTx(input) },
+	)
 }
 
 // Consensus Connection
-// Initialize blockchain w validators/other info from CometBFT
 func (m BaseMock) InitChain(input types.RequestInitChain) types.ResponseInitChain {
-	var ret types.ResponseInitChain
-	defer func() {
-		if r := recover(); r != nil {
-			ret = m.base.InitChain(input)
-		}
-	}()
-	ret = m.Application.InitChain(input)
-	return ret
+	return m.withFallback(
+		func() types.ResponseInitChain { return m.Application.InitChain(input) },
+		func() types.ResponseInitChain { return m.base.InitChain(input) },
+	)
 }
 
 func (m BaseMock) PrepareProposal(input types.RequestPrepareProposal) types.ResponsePrepareProposal {
-	var ret types.ResponsePrepareProposal
-	defer func() {
-		if r := recover(); r != nil {
-			ret = m.base.PrepareProposal(input)
-		}
-	}()
-	ret = m.Application.PrepareProposal(input)
-	return ret
+	return m.withFallback(
+		func() types.ResponsePrepareProposal { return m.Application.PrepareProposal(input) },
+		func() types.ResponsePrepareProposal { return m.base.PrepareProposal(input) },
+	)
 }
 
 func (m BaseMock) ProcessProposal(input types.RequestProcessProposal) types.ResponseProcessProposal {
-	var ret types.ResponseProcessProposal
-	defer func() {
-		if r := recover(); r != nil {
-			ret = m.base.ProcessProposal(input)
-		}
-	}()
-	ret = m.Application.ProcessProposal(input)
-	return ret
+	return m.withFallback(
+		func() types.ResponseProcessProposal { return m.Application.ProcessProposal(input) },
+		func() types.ResponseProcessProposal { return m.base.ProcessProposal(input) },
+	)
 }
 
-// Commit the state and return the application Merkle root hash
 func (m BaseMock) Commit() types.ResponseCommit {
-	var ret types.ResponseCommit
-	defer func() {
-		if r := recover(); r != nil {
-			ret = m.base.Commit()
-		}
-	}()
-	ret = m.Application.Commit()
-	return ret
+	return m.withFallback(
+		func() types.ResponseCommit { return m.Application.Commit() },
+		func() types.ResponseCommit { return m.base.Commit() },
+	)
 }
 
 // State Sync Connection
-// List available snapshots
 func (m BaseMock) ListSnapshots(input types.RequestListSnapshots) types.ResponseListSnapshots {
-	var ret types.ResponseListSnapshots
-	defer func() {
-		if r := recover(); r != nil {
-			ret = m.base.ListSnapshots(input)
-		}
-	}()
-	ret = m.Application.ListSnapshots(input)
-	return ret
+	return m.withFallback(
+		func() types.ResponseListSnapshots { return m.Application.ListSnapshots(input) },
+		func() types.ResponseListSnapshots { return m.base.ListSnapshots(input) },
+	)
 }
 
 func (m BaseMock) OfferSnapshot(input types.RequestOfferSnapshot) types.ResponseOfferSnapshot {
-	var ret types.ResponseOfferSnapshot
-	defer func() {
-		if r := recover(); r != nil {
-			ret = m.base.OfferSnapshot(input)
-		}
-	}()
-	ret = m.Application.OfferSnapshot(input)
-	return ret
+	return m.withFallback(
+		func() types.ResponseOfferSnapshot { return m.Application.OfferSnapshot(input) },
+		func() types.ResponseOfferSnapshot { return m.base.OfferSnapshot(input) },
+	)
 }
 
 func (m BaseMock) LoadSnapshotChunk(input types.RequestLoadSnapshotChunk) types.ResponseLoadSnapshotChunk {
-	var ret types.ResponseLoadSnapshotChunk
-	defer func() {
-		if r := recover(); r != nil {
-			ret = m.base.LoadSnapshotChunk(input)
-		}
-	}()
-	ret = m.Application.LoadSnapshotChunk(input)
-	return ret
+	return m.withFallback(
+		func() types.ResponseLoadSnapshotChunk { return m.Application.LoadSnapshotChunk(input) },
+		func() types.ResponseLoadSnapshotChunk { return m.base.LoadSnapshotChunk(input) },
+	)
 }
 
 func (m BaseMock) ApplySnapshotChunk(input types.RequestApplySnapshotChunk) types.ResponseApplySnapshotChunk {
-	var ret types.ResponseApplySnapshotChunk
-	defer func() {
-		if r := recover(); r != nil {
-			ret = m.base.ApplySnapshotChunk(input)
-		}
-	}()
-	ret = m.Application.ApplySnapshotChunk(input)
-	return ret
+	return m.withFallback(
+		func() types.ResponseApplySnapshotChunk { return m.Application.ApplySnapshotChunk(input) },
+		func() types.ResponseApplySnapshotChunk { return m.base.ApplySnapshotChunk(input) },
+	)
 }
 
 func (m BaseMock) BeginBlock(input types.RequestBeginBlock) types.ResponseBeginBlock {
-	var ret types.ResponseBeginBlock
-	defer func() {
-		if r := recover(); r != nil {
-			ret = m.base.BeginBlock(input)
-		}
-	}()
-	ret = m.Application.BeginBlock(input)
-	return ret
+	return m.withFallback(
+		func() types.ResponseBeginBlock { return m.Application.BeginBlock(input) },
+		func() types.ResponseBeginBlock { return m.base.BeginBlock(input) },
+	)
 }
 
 func (m BaseMock) DeliverTx(input types.RequestDeliverTx) types.ResponseDeliverTx {
-	var ret types.ResponseDeliverTx
-	defer func() {
-		if r := recover(); r != nil {
-			ret = m.base.DeliverTx(input)
-		}
-	}()
-	ret = m.Application.DeliverTx(input)
-	return ret
+	return m.withFallback(
+		func() types.ResponseDeliverTx { return m.Application.DeliverTx(input) },
+		func() types.ResponseDeliverTx { return m.base.DeliverTx(input) },
+	)
 }
 
 func (m BaseMock) EndBlock(input types.RequestEndBlock) types.ResponseEndBlock {
-	var ret types.ResponseEndBlock
-	defer func() {
-		if r := recover(); r != nil {
-			ret = m.base.EndBlock(input)
-		}
-	}()
-	ret = m.Application.EndBlock(input)
-	return ret
+	return m.withFallback(
+		func() types.ResponseEndBlock { return m.Application.EndBlock(input) },
+		func() types.ResponseEndBlock { return m.base.EndBlock(input) },
+	)
 }
