@@ -1,330 +1,253 @@
+```go
 package blocksync
 
 import (
-	"fmt"
-	"os"
-	"sort"
-	"testing"
-	"time"
+    "fmt"
+    "os"
+    "sort"
+    "testing"
+    "time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
+    "github.com/stretchr/testify/assert" 
+    "github.com/stretchr/testify/mock"
+    "github.com/stretchr/testify/require"
 
-	dbm "github.com/cometbft/cometbft-db"
-
-	abci "github.com/cometbft/cometbft/abci/types"
-	cfg "github.com/cometbft/cometbft/config"
-	"github.com/cometbft/cometbft/libs/log"
-	mpmocks "github.com/cometbft/cometbft/mempool/mocks"
-	"github.com/cometbft/cometbft/p2p"
-	"github.com/cometbft/cometbft/proxy"
-	sm "github.com/cometbft/cometbft/state"
-	"github.com/cometbft/cometbft/store"
-	"github.com/cometbft/cometbft/types"
-	cmttime "github.com/cometbft/cometbft/types/time"
+    dbm "github.com/baron-chain/cometbft-bc-db"
+    abci "github.com/baron-chain/cometbft-bc/abci/types"
+    cfg "github.com/baron-chain/cometbft-bc/config"
+    "github.com/baron-chain/cometbft-bc/libs/log"
+    mpmocks "github.com/baron-chain/cometbft-bc/mempool/mocks"
+    "github.com/baron-chain/cometbft-bc/p2p"
+    "github.com/baron-chain/cometbft-bc/proxy"
+    sm "github.com/baron-chain/cometbft-bc/state"
+    "github.com/baron-chain/cometbft-bc/store" 
+    "github.com/baron-chain/cometbft-bc/types"
+    cmttime "github.com/baron-chain/cometbft-bc/types/time"
 )
 
 var config *cfg.Config
 
 func randGenesisDoc(numValidators int, randPower bool, minPower int64) (*types.GenesisDoc, []types.PrivValidator) {
-	validators := make([]types.GenesisValidator, numValidators)
-	privValidators := make([]types.PrivValidator, numValidators)
-	for i := 0; i < numValidators; i++ {
-		val, privVal := types.RandValidator(randPower, minPower)
-		validators[i] = types.GenesisValidator{
-			PubKey: val.PubKey,
-			Power:  val.VotingPower,
-		}
-		privValidators[i] = privVal
-	}
-	sort.Sort(types.PrivValidatorsByAddress(privValidators))
+    validators := make([]types.GenesisValidator, numValidators)
+    privValidators := make([]types.PrivValidator, numValidators)
+    
+    for i := 0; i < numValidators; i++ {
+        val, privVal := types.RandValidator(randPower, minPower)
+        validators[i] = types.GenesisValidator{
+            PubKey: val.PubKey,
+            Power:  val.VotingPower,
+        }
+        privValidators[i] = privVal
+    }
+    
+    sort.Sort(types.PrivValidatorsByAddress(privValidators))
 
-	return &types.GenesisDoc{
-		GenesisTime: cmttime.Now(),
-		ChainID:     config.ChainID(),
-		Validators:  validators,
-	}, privValidators
+    return &types.GenesisDoc{
+        GenesisTime: cmttime.Now(),
+        ChainID:     config.ChainID(),
+        Validators:  validators,
+    }, privValidators
 }
 
 type ReactorPair struct {
-	reactor *Reactor
-	app     proxy.AppConns
+    reactor *Reactor
+    app     proxy.AppConns
 }
 
-func newReactor(
-	t *testing.T,
-	logger log.Logger,
-	genDoc *types.GenesisDoc,
-	privVals []types.PrivValidator,
-	maxBlockHeight int64,
-) ReactorPair {
-	if len(privVals) != 1 {
-		panic("only support one validator")
-	}
+func newReactor(t *testing.T, logger log.Logger, genDoc *types.GenesisDoc, privVals []types.PrivValidator, maxBlockHeight int64) ReactorPair {
+    require.Equal(t, 1, len(privVals), "only single validator supported")
 
-	app := &testApp{}
-	cc := proxy.NewLocalClientCreator(app)
-	proxyApp := proxy.NewAppConns(cc, proxy.NopMetrics())
-	err := proxyApp.Start()
-	if err != nil {
-		panic(fmt.Errorf("error start app: %w", err))
-	}
+    app := &testApp{}
+    cc := proxy.NewLocalClientCreator(app)
+    proxyApp := proxy.NewAppConns(cc, proxy.NopMetrics())
+    require.NoError(t, proxyApp.Start())
 
-	blockDB := dbm.NewMemDB()
-	stateDB := dbm.NewMemDB()
-	stateStore := sm.NewStore(stateDB, sm.StoreOptions{
-		DiscardABCIResponses: false,
-	})
-	blockStore := store.NewBlockStore(blockDB)
+    blockDB := dbm.NewMemDB()
+    stateDB := dbm.NewMemDB()
+    stateStore := sm.NewStore(stateDB, sm.StoreOptions{DiscardABCIResponses: false})
+    blockStore := store.NewBlockStore(blockDB)
 
-	state, err := stateStore.LoadFromDBOrGenesisDoc(genDoc)
-	if err != nil {
-		panic(fmt.Errorf("error constructing state from genesis file: %w", err))
-	}
+    state, err := stateStore.LoadFromDBOrGenesisDoc(genDoc)
+    require.NoError(t, err)
 
-	mp := &mpmocks.Mempool{}
-	mp.On("Lock").Return()
-	mp.On("Unlock").Return()
-	mp.On("FlushAppConn", mock.Anything).Return(nil)
-	mp.On("Update",
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything).Return(nil)
+    mp := &mpmocks.Mempool{}
+    mp.On("Lock").Return()
+    mp.On("Unlock").Return()
+    mp.On("FlushAppConn", mock.Anything).Return(nil)
+    mp.On("Update", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
-	// Make the Reactor itself.
-	// NOTE we have to create and commit the blocks first because
-	// pool.height is determined from the store.
-	fastSync := true
-	db := dbm.NewMemDB()
-	stateStore = sm.NewStore(db, sm.StoreOptions{
-		DiscardABCIResponses: false,
-	})
-	blockExec := sm.NewBlockExecutor(stateStore, log.TestingLogger(), proxyApp.Consensus(),
-		mp, sm.EmptyEvidencePool{})
-	if err = stateStore.Save(state); err != nil {
-		panic(err)
-	}
+    db := dbm.NewMemDB()
+    stateStore = sm.NewStore(db, sm.StoreOptions{DiscardABCIResponses: false})
+    blockExec := sm.NewBlockExecutor(stateStore, log.TestingLogger(), proxyApp.Consensus(), mp, sm.EmptyEvidencePool{})
+    require.NoError(t, stateStore.Save(state))
 
-	// let's add some blocks in
-	for blockHeight := int64(1); blockHeight <= maxBlockHeight; blockHeight++ {
-		lastCommit := types.NewCommit(blockHeight-1, 0, types.BlockID{}, nil)
-		if blockHeight > 1 {
-			lastBlockMeta := blockStore.LoadBlockMeta(blockHeight - 1)
-			lastBlock := blockStore.LoadBlock(blockHeight - 1)
+    for height := int64(1); height <= maxBlockHeight; height++ {
+        lastCommit := types.NewCommit(height-1, 0, types.BlockID{}, nil)
+        if height > 1 {
+            lastMeta := blockStore.LoadBlockMeta(height - 1)
+            lastBlock := blockStore.LoadBlock(height - 1)
+            
+            vote, err := types.MakeVote(
+                lastBlock.Header.Height,
+                lastMeta.BlockID,
+                state.Validators, 
+                privVals[0],
+                lastBlock.Header.ChainID,
+                time.Now(),
+            )
+            require.NoError(t, err)
+            
+            lastCommit = types.NewCommit(
+                vote.Height,
+                vote.Round,
+                lastMeta.BlockID,
+                []types.CommitSig{vote.CommitSig()},
+            )
+        }
 
-			vote, err := types.MakeVote(
-				lastBlock.Header.Height,
-				lastBlockMeta.BlockID,
-				state.Validators,
-				privVals[0],
-				lastBlock.Header.ChainID,
-				time.Now(),
-			)
-			if err != nil {
-				panic(err)
-			}
-			lastCommit = types.NewCommit(vote.Height, vote.Round,
-				lastBlockMeta.BlockID, []types.CommitSig{vote.CommitSig()})
-		}
+        block := state.MakeBlock(height, nil, lastCommit, nil, state.Validators.Proposer.Address)
+        parts, err := block.MakePartSet(types.BlockPartSizeBytes)
+        require.NoError(t, err)
+        
+        blockID := types.BlockID{Hash: block.Hash(), PartSetHeader: parts.Header()}
+        state, _, err = blockExec.ApplyBlock(state, blockID, block)
+        require.NoError(t, err)
 
-		thisBlock := state.MakeBlock(blockHeight, nil, lastCommit, nil, state.Validators.Proposer.Address)
+        blockStore.SaveBlock(block, parts, lastCommit)
+    }
 
-		thisParts, err := thisBlock.MakePartSet(types.BlockPartSizeBytes)
-		require.NoError(t, err)
-		blockID := types.BlockID{Hash: thisBlock.Hash(), PartSetHeader: thisParts.Header()}
+    reactor := NewReactor(state.Copy(), blockExec, blockStore, true)
+    reactor.SetLogger(logger.With("module", "blockchain"))
 
-		state, _, err = blockExec.ApplyBlock(state, blockID, thisBlock)
-		if err != nil {
-			panic(fmt.Errorf("error apply block: %w", err))
-		}
-
-		blockStore.SaveBlock(thisBlock, thisParts, lastCommit)
-	}
-
-	bcReactor := NewReactor(state.Copy(), blockExec, blockStore, fastSync)
-	bcReactor.SetLogger(logger.With("module", "blockchain"))
-
-	return ReactorPair{bcReactor, proxyApp}
+    return ReactorPair{reactor, proxyApp}
 }
 
 func TestNoBlockResponse(t *testing.T) {
-	config = cfg.ResetTestRoot("blockchain_reactor_test")
-	defer os.RemoveAll(config.RootDir)
-	genDoc, privVals := randGenesisDoc(1, false, 30)
+    config = cfg.ResetTestRoot("blockchain_reactor_test")
+    defer os.RemoveAll(config.RootDir)
 
-	maxBlockHeight := int64(65)
+    genDoc, privVals := randGenesisDoc(1, false, 30)
+    pairs := []ReactorPair{
+        newReactor(t, log.TestingLogger(), genDoc, privVals, 65),
+        newReactor(t, log.TestingLogger(), genDoc, privVals, 0),
+    }
 
-	reactorPairs := make([]ReactorPair, 2)
+    switches := p2p.MakeConnectedSwitches(config.P2P, 2, func(i int, s *p2p.Switch) *p2p.Switch {
+        s.AddReactor("BLOCKCHAIN", pairs[i].reactor)
+        return s
+    }, p2p.Connect2Switches)
 
-	reactorPairs[0] = newReactor(t, log.TestingLogger(), genDoc, privVals, maxBlockHeight)
-	reactorPairs[1] = newReactor(t, log.TestingLogger(), genDoc, privVals, 0)
+    defer func() {
+        for _, pair := range pairs {
+            require.NoError(t, pair.reactor.Stop())
+            require.NoError(t, pair.app.Stop())
+        }
+    }()
 
-	p2p.MakeConnectedSwitches(config.P2P, 2, func(i int, s *p2p.Switch) *p2p.Switch {
-		s.AddReactor("BLOCKCHAIN", reactorPairs[i].reactor)
-		return s
-	}, p2p.Connect2Switches)
+    for !pairs[1].reactor.pool.IsCaughtUp() {
+        time.Sleep(10 * time.Millisecond) 
+    }
 
-	defer func() {
-		for _, r := range reactorPairs {
-			err := r.reactor.Stop()
-			require.NoError(t, err)
-			err = r.app.Stop()
-			require.NoError(t, err)
-		}
-	}()
+    assert.Equal(t, int64(65), pairs[0].reactor.store.Height())
 
-	tests := []struct {
-		height   int64
-		existent bool
-	}{
-		{maxBlockHeight + 2, false},
-		{10, true},
-		{1, true},
-		{100, false},
-	}
+    tests := []struct {
+        height int64
+        exists bool 
+    }{
+        {67, false},
+        {10, true},
+        {1, true},
+        {100, false},
+    }
 
-	for {
-		if reactorPairs[1].reactor.pool.IsCaughtUp() {
-			break
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	assert.Equal(t, maxBlockHeight, reactorPairs[0].reactor.store.Height())
-
-	for _, tt := range tests {
-		block := reactorPairs[1].reactor.store.LoadBlock(tt.height)
-		if tt.existent {
-			assert.True(t, block != nil)
-		} else {
-			assert.True(t, block == nil)
-		}
-	}
+    for _, tt := range tests {
+        block := pairs[1].reactor.store.LoadBlock(tt.height)
+        assert.Equal(t, tt.exists, block != nil)
+    }
 }
 
-// NOTE: This is too hard to test without
-// an easy way to add test peer to switch
-// or without significant refactoring of the module.
-// Alternatively we could actually dial a TCP conn but
-// that seems extreme.
 func TestBadBlockStopsPeer(t *testing.T) {
-	config = cfg.ResetTestRoot("blockchain_reactor_test")
-	defer os.RemoveAll(config.RootDir)
-	genDoc, privVals := randGenesisDoc(1, false, 30)
+    config = cfg.ResetTestRoot("blockchain_reactor_test")
+    defer os.RemoveAll(config.RootDir)
 
-	maxBlockHeight := int64(148)
+    genDoc, privVals := randGenesisDoc(1, false, 30)
+    otherGenDoc, otherPrivVals := randGenesisDoc(1, false, 30)
+    
+    const maxHeight = 148
+    otherChain := newReactor(t, log.TestingLogger(), otherGenDoc, otherPrivVals, maxHeight)
+    defer func() {
+        require.Error(t, otherChain.reactor.Stop())
+        require.NoError(t, otherChain.app.Stop())
+    }()
 
-	// Other chain needs a different validator set
-	otherGenDoc, otherPrivVals := randGenesisDoc(1, false, 30)
-	otherChain := newReactor(t, log.TestingLogger(), otherGenDoc, otherPrivVals, maxBlockHeight)
+    pairs := make([]ReactorPair, 4)
+    pairs[0] = newReactor(t, log.TestingLogger(), genDoc, privVals, maxHeight)
+    for i := 1; i < 4; i++ {
+        pairs[i] = newReactor(t, log.TestingLogger(), genDoc, privVals, 0)
+    }
 
-	defer func() {
-		err := otherChain.reactor.Stop()
-		require.Error(t, err)
-		err = otherChain.app.Stop()
-		require.NoError(t, err)
-	}()
+    switches := p2p.MakeConnectedSwitches(config.P2P, 4, func(i int, s *p2p.Switch) *p2p.Switch {
+        s.AddReactor("BLOCKCHAIN", pairs[i].reactor)
+        return s
+    }, p2p.Connect2Switches)
 
-	reactorPairs := make([]ReactorPair, 4)
+    defer func() {
+        for _, pair := range pairs {
+            require.NoError(t, pair.reactor.Stop())
+            require.NoError(t, pair.app.Stop())
+        }
+    }()
 
-	reactorPairs[0] = newReactor(t, log.TestingLogger(), genDoc, privVals, maxBlockHeight)
-	reactorPairs[1] = newReactor(t, log.TestingLogger(), genDoc, privVals, 0)
-	reactorPairs[2] = newReactor(t, log.TestingLogger(), genDoc, privVals, 0)
-	reactorPairs[3] = newReactor(t, log.TestingLogger(), genDoc, privVals, 0)
+    for {
+        if allCaughtUp := true; allCaughtUp {
+            for _, pair := range pairs {
+                if !pair.reactor.pool.IsCaughtUp() {
+                    allCaughtUp = false
+                    break
+                }
+            }
+            if allCaughtUp {
+                break
+            }
+        }
+        time.Sleep(time.Second)
+    }
 
-	switches := p2p.MakeConnectedSwitches(config.P2P, 4, func(i int, s *p2p.Switch) *p2p.Switch {
-		s.AddReactor("BLOCKCHAIN", reactorPairs[i].reactor)
-		return s
-	}, p2p.Connect2Switches)
+    assert.Equal(t, 3, pairs[1].reactor.Switch.Peers().Size())
 
-	defer func() {
-		for _, r := range reactorPairs {
-			err := r.reactor.Stop()
-			require.NoError(t, err)
+    pairs[3].reactor.store = otherChain.reactor.store
 
-			err = r.app.Stop()
-			require.NoError(t, err)
-		}
-	}()
+    lastPair := newReactor(t, log.TestingLogger(), genDoc, privVals, 0)
+    pairs = append(pairs, lastPair)
 
-	for {
-		time.Sleep(1 * time.Second)
-		caughtUp := true
-		for _, r := range reactorPairs {
-			if !r.reactor.pool.IsCaughtUp() {
-				caughtUp = false
-			}
-		}
-		if caughtUp {
-			break
-		}
-	}
+    switches = append(switches, p2p.MakeConnectedSwitches(config.P2P, 1, func(i int, s *p2p.Switch) *p2p.Switch {
+        s.AddReactor("BLOCKCHAIN", pairs[len(pairs)-1].reactor)
+        return s
+    }, p2p.Connect2Switches)...)
 
-	// at this time, reactors[0-3] is the newest
-	assert.Equal(t, 3, reactorPairs[1].reactor.Switch.Peers().Size())
+    for i := 0; i < len(pairs)-1; i++ {
+        p2p.Connect2Switches(switches, i, len(pairs)-1)
+    }
 
-	// Mark reactorPairs[3] as an invalid peer. Fiddling with .store without a mutex is a data
-	// race, but can't be easily avoided.
-	reactorPairs[3].reactor.store = otherChain.reactor.store
+    for {
+        if lastPair.reactor.pool.IsCaughtUp() || lastPair.reactor.Switch.Peers().Size() == 0 {
+            break
+        }
+        time.Sleep(time.Second)
+    }
 
-	lastReactorPair := newReactor(t, log.TestingLogger(), genDoc, privVals, 0)
-	reactorPairs = append(reactorPairs, lastReactorPair)
-
-	switches = append(switches, p2p.MakeConnectedSwitches(config.P2P, 1, func(i int, s *p2p.Switch) *p2p.Switch {
-		s.AddReactor("BLOCKCHAIN", reactorPairs[len(reactorPairs)-1].reactor)
-		return s
-	}, p2p.Connect2Switches)...)
-
-	for i := 0; i < len(reactorPairs)-1; i++ {
-		p2p.Connect2Switches(switches, i, len(reactorPairs)-1)
-	}
-
-	for {
-		if lastReactorPair.reactor.pool.IsCaughtUp() || lastReactorPair.reactor.Switch.Peers().Size() == 0 {
-			break
-		}
-
-		time.Sleep(1 * time.Second)
-	}
-
-	assert.True(t, lastReactorPair.reactor.Switch.Peers().Size() < len(reactorPairs)-1)
+    assert.True(t, lastPair.reactor.Switch.Peers().Size() < len(pairs)-1)
 }
 
 type testApp struct {
-	abci.BaseApplication
+    abci.BaseApplication
 }
 
-var _ abci.Application = (*testApp)(nil)
-
-func (app *testApp) Info(req abci.RequestInfo) (resInfo abci.ResponseInfo) {
-	return abci.ResponseInfo{}
-}
-
-func (app *testApp) BeginBlock(req abci.RequestBeginBlock) abci.ResponseBeginBlock {
-	return abci.ResponseBeginBlock{}
-}
-
-func (app *testApp) EndBlock(req abci.RequestEndBlock) abci.ResponseEndBlock {
-	return abci.ResponseEndBlock{}
-}
-
-func (app *testApp) DeliverTx(req abci.RequestDeliverTx) abci.ResponseDeliverTx {
-	return abci.ResponseDeliverTx{Events: []abci.Event{}}
-}
-
-func (app *testApp) CheckTx(req abci.RequestCheckTx) abci.ResponseCheckTx {
-	return abci.ResponseCheckTx{}
-}
-
-func (app *testApp) Commit() abci.ResponseCommit {
-	return abci.ResponseCommit{}
-}
-
-func (app *testApp) Query(reqQuery abci.RequestQuery) (resQuery abci.ResponseQuery) {
-	return
-}
+func (app *testApp) Info(abci.RequestInfo) abci.ResponseInfo           { return abci.ResponseInfo{} }
+func (app *testApp) BeginBlock(abci.RequestBeginBlock) abci.ResponseBeginBlock { return abci.ResponseBeginBlock{} }
+func (app *testApp) EndBlock(abci.RequestEndBlock) abci.ResponseEndBlock       { return abci.ResponseEndBlock{} }
+func (app *testApp) DeliverTx(abci.RequestDeliverTx) abci.ResponseDeliverTx   { return abci.ResponseDeliverTx{} }
+func (app *testApp) CheckTx(abci.RequestCheckTx) abci.ResponseCheckTx         { return abci.ResponseCheckTx{} }
+func (app *testApp) Commit() abci.ResponseCommit                             { return abci.ResponseCommit{} }
+func (app *testApp) Query(abci.RequestQuery) abci.ResponseQuery             { return abci.ResponseQuery{} }
+```
