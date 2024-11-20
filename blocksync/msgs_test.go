@@ -5,7 +5,7 @@ import (
     "math"
     "testing"
 
-    "github.com/cosmos/gogoproto/proto"
+    "github.com/baron-chain/gogoproto/proto"
     "github.com/stretchr/testify/assert"
     "github.com/stretchr/testify/require"
 
