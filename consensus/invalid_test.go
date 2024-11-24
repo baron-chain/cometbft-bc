@@ -1,104 +1,150 @@
 package consensus
 
 import (
-	"testing"
+    "testing"
+    "time"
 
-	"github.com/cometbft/cometbft/libs/bytes"
-	"github.com/cometbft/cometbft/libs/log"
-	cmtrand "github.com/cometbft/cometbft/libs/rand"
-	"github.com/cometbft/cometbft/p2p"
-	cmtcons "github.com/cometbft/cometbft/proto/tendermint/consensus"
-	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
-	"github.com/cometbft/cometbft/types"
+    "github.com/stretchr/testify/require"
+    "github.com/baron-chain/cometbft-bc/libs/bytes"
+    "github.com/baron-chain/cometbft-bc/libs/log"
+    bcrand "github.com/baron-chain/cometbft-bc/libs/rand"
+    "github.com/baron-chain/cometbft-bc/p2p"
+    bccons "github.com/baron-chain/cometbft-bc/proto/consensus"
+    bcproto "github.com/baron-chain/cometbft-bc/proto/types"
+    "github.com/baron-chain/cometbft-bc/types"
 )
 
-//----------------------------------------------
-// byzantine failures
+const (
+    invalidPrecommitTestValidators = 4
+    maxTestBlocks = 10
+    byzantineValidatorIndex = 0
+)
 
-// one byz val sends a precommit for a random block at each height
-// Ensure a testnet makes blocks
+// TestReactorInvalidPrecommit tests that a Byzantine validator sending invalid
+// precommits does not prevent consensus from making progress
 func TestReactorInvalidPrecommit(t *testing.T) {
-	N := 4
-	css, cleanup := randConsensusNet(N, "consensus_reactor_test", newMockTickerFunc(true), newKVStore)
-	defer cleanup()
+    // Create a network of validators
+    css, cleanup := randConsensusNet(
+        invalidPrecommitTestValidators, 
+        "consensus_invalid_precommit_test",
+        newMockTickerFunc(true),
+        newKVStore,
+    )
+    defer cleanup()
 
-	for i := 0; i < 4; i++ {
-		ticker := NewTimeoutTicker()
-		ticker.SetLogger(css[i].Logger)
-		css[i].SetTimeoutTicker(ticker)
+    // Initialize timeout tickers
+    for i := range css {
+        ticker := NewTimeoutTicker()
+        ticker.SetLogger(css[i].Logger)
+        css[i].SetTimeoutTicker(ticker)
+    }
 
-	}
+    // Start consensus network
+    reactors, blocksSubs, eventBuses := startConsensusNet(t, css, invalidPrecommitTestValidators)
+    defer stopConsensusNet(log.TestingLogger(), reactors, eventBuses)
 
-	reactors, blocksSubs, eventBuses := startConsensusNet(t, css, N)
+    // Configure Byzantine validator
+    byzVal := css[byzantineValidatorIndex]
+    byzReactor := reactors[byzantineValidatorIndex]
 
-	// this val sends a random precommit at each height
-	byzValIdx := 0
-	byzVal := css[byzValIdx]
-	byzR := reactors[byzValIdx]
+    byzVal.mtx.Lock()
+    privVal := byzVal.privValidator
+    byzVal.doPrevote = func(height int64, round int32) {
+        sendInvalidPrecommit(t, height, round, byzVal, byzReactor.Switch, privVal)
+    }
+    byzVal.mtx.Unlock()
 
-	// update the doPrevote function to just send a valid precommit for a random block
-	// and otherwise disable the priv validator
-	byzVal.mtx.Lock()
-	pv := byzVal.privValidator
-	byzVal.doPrevote = func(height int64, round int32) {
-		invalidDoPrevoteFunc(t, height, round, byzVal, byzR.Switch, pv)
-	}
-	byzVal.mtx.Unlock()
-	defer stopConsensusNet(log.TestingLogger(), reactors, eventBuses)
-
-	// wait for a bunch of blocks
-	// TODO: make this tighter by ensuring the halt happens by block 2
-	for i := 0; i < 10; i++ {
-		timeoutWaitGroup(t, N, func(j int) {
-			<-blocksSubs[j].Out()
-		}, css)
-	}
+    // Wait for blocks to be produced
+    waitForBlocks(t, blocksSubs, css, maxTestBlocks)
 }
 
-func invalidDoPrevoteFunc(t *testing.T, height int64, round int32, cs *State, sw *p2p.Switch, pv types.PrivValidator) {
-	// routine to:
-	// - precommit for a random block
-	// - send precommit to all peers
-	// - disable privValidator (so we don't do normal precommits)
-	go func() {
-		cs.mtx.Lock()
-		cs.privValidator = pv
-		pubKey, err := cs.privValidator.GetPubKey()
-		if err != nil {
-			panic(err)
-		}
-		addr := pubKey.Address()
-		valIndex, _ := cs.Validators.GetByAddress(addr)
+// sendInvalidPrecommit generates and broadcasts an invalid precommit vote
+func sendInvalidPrecommit(
+    t *testing.T,
+    height int64,
+    round int32,
+    cs *State,
+    sw *p2p.Switch,
+    pv types.PrivValidator,
+) {
+    go func() {
+        cs.mtx.Lock()
+        defer cs.mtx.Unlock()
 
-		// precommit a random block
-		blockHash := bytes.HexBytes(cmtrand.Bytes(32))
-		precommit := &types.Vote{
-			ValidatorAddress: addr,
-			ValidatorIndex:   valIndex,
-			Height:           cs.Height,
-			Round:            cs.Round,
-			Timestamp:        cs.voteTime(),
-			Type:             cmtproto.PrecommitType,
-			BlockID: types.BlockID{
-				Hash:          blockHash,
-				PartSetHeader: types.PartSetHeader{Total: 1, Hash: cmtrand.Bytes(32)}},
-		}
-		p := precommit.ToProto()
-		err = cs.privValidator.SignVote(cs.state.ChainID, p)
-		if err != nil {
-			t.Error(err)
-		}
-		precommit.Signature = p.Signature
-		cs.privValidator = nil // disable priv val so we don't do normal votes
-		cs.mtx.Unlock()
+        // Get validator info
+        cs.privValidator = pv
+        pubKey, err := cs.privValidator.GetPubKey()
+        require.NoError(t, err)
 
-		peers := sw.Peers().List()
-		for _, peer := range peers {
-			cs.Logger.Info("Sending bad vote", "block", blockHash, "peer", peer)
-			peer.SendEnvelope(p2p.Envelope{
-				Message:   &cmtcons.Vote{Vote: precommit.ToProto()},
-				ChannelID: VoteChannel,
-			})
-		}
-	}()
+        addr := pubKey.Address()
+        valIndex, _ := cs.Validators.GetByAddress(addr)
+
+        // Create random invalid precommit
+        invalidPrecommit := generateInvalidPrecommit(cs, addr, valIndex, height, round)
+
+        // Sign the precommit
+        protoVote := invalidPrecommit.ToProto()
+        err = cs.privValidator.SignVote(cs.state.ChainID, protoVote)
+        require.NoError(t, err)
+
+        invalidPrecommit.Signature = protoVote.Signature
+        
+        // Disable validator to prevent normal voting
+        cs.privValidator = nil
+
+        // Broadcast invalid precommit to peers
+        broadcastInvalidPrecommit(cs, sw, invalidPrecommit)
+    }()
+}
+
+func generateInvalidPrecommit(
+    cs *State,
+    addr bytes.HexBytes,
+    valIndex int32,
+    height int64,
+    round int32,
+) *types.Vote {
+    return &types.Vote{
+        ValidatorAddress: addr,
+        ValidatorIndex:   valIndex,
+        Height:          height,
+        Round:           round,
+        Timestamp:       cs.voteTime(),
+        Type:            bcproto.PrecommitType,
+        BlockID: types.BlockID{
+            Hash:          bcrand.Bytes(32),
+            PartSetHeader: types.PartSetHeader{
+                Total: 1,
+                Hash:  bcrand.Bytes(32),
+            },
+        },
+    }
+}
+
+func broadcastInvalidPrecommit(cs *State, sw *p2p.Switch, precommit *types.Vote) {
+    peers := sw.Peers().List()
+    for _, peer := range peers {
+        cs.Logger.Info("Broadcasting invalid precommit",
+            "block_hash", precommit.BlockID.Hash,
+            "peer", peer)
+            
+        peer.SendEnvelope(p2p.Envelope{
+            Message: &bccons.Vote{
+                Vote: precommit.ToProto(),
+            },
+            ChannelID: VoteChannel,
+        })
+    }
+}
+
+func waitForBlocks(t *testing.T, subs []types.Subscription, css []*State, numBlocks int) {
+    for i := 0; i < numBlocks; i++ {
+        timeoutWaitGroup(t, len(css), func(j int) {
+            select {
+            case <-subs[j].Out():
+            case <-time.After(30 * time.Second):
+                t.Fatal("Timed out waiting for block")
+            }
+        }, css)
+    }
 }
