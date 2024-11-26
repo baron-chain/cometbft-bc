@@ -14,9 +14,6 @@ import (
 	"github.com/cosmos/gogoproto/proto"
 )
 
-// MsgToProto takes a consensus message type and returns the proto defined consensus message.
-//
-// TODO: This needs to be removed, but WALToProto depends on this.
 func MsgToProto(msg Message) (proto.Message, error) {
 	if msg == nil {
 		return nil, errors.New("consensus: message is nil")
