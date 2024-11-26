@@ -1,5 +1,5 @@
 # Go Coding Style Guide
-
+#Baron Chain
 In order to keep our code looking good with lots of programmers working on it, it helps to have a "style guide", so all
 the code generally looks quite similar. This doesn't mean there is only one "right way" to write code, or even that this
 standard is better than your style.  But if we agree to a number of stylistic practices, it makes it much easier to read
