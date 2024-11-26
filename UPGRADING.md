@@ -1,7 +1,7 @@
 # Upgrading CometBFT
 
 This guide provides instructions for upgrading to specific versions of CometBFT.
-
+#Baron Chain
 ## v0.37.1
 
 For users explicitly making use of the Go APIs provided in the `crypto/merkle`
