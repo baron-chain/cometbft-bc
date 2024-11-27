@@ -1,84 +1,161 @@
 package types
 
 import (
-	"errors"
-	"fmt"
-	"time"
+    "errors"
+    "fmt"
+    "time"
 
-	"github.com/cometbft/cometbft/crypto/ed25519"
-	"github.com/cometbft/cometbft/crypto/secp256k1"
-	"github.com/cometbft/cometbft/crypto/tmhash"
-	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
+    "github.com/baron-chain/cometbft-bc/crypto/ed25519"
+    "github.com/baron-chain/cometbft-bc/crypto/kyber"
+    "github.com/baron-chain/cometbft-bc/crypto/secp256k1"
+    "github.com/baron-chain/cometbft-bc/crypto/tmhash"
+    bcproto "github.com/baron-chain/cometbft-bc/proto/tendermint/types"
 )
 
 const (
-	// MaxBlockSizeBytes is the maximum permitted size of the blocks.
-	MaxBlockSizeBytes = 104857600 // 100MB
-
-	// BlockPartSizeBytes is the size of one block part.
-	BlockPartSizeBytes uint32 = 65536 // 64kB
-
-	// MaxBlockPartsCount is the maximum number of block parts.
-	MaxBlockPartsCount = (MaxBlockSizeBytes / BlockPartSizeBytes) + 1
-
-	ABCIPubKeyTypeEd25519   = ed25519.KeyType
-	ABCIPubKeyTypeSecp256k1 = secp256k1.KeyType
+    MaxBlockSizeBytes    = 104857600 // 100MB
+    BlockPartSizeBytes   uint32 = 65536 // 64kB
+    MaxBlockPartsCount   = (MaxBlockSizeBytes / BlockPartSizeBytes) + 1
+    
+    // Supported key types
+    PubKeyTypeEd25519   = ed25519.KeyType
+    PubKeyTypeSecp256k1 = secp256k1.KeyType
+    PubKeyTypeKyber     = kyber.KeyType
 )
 
-var ABCIPubKeyTypesToNames = map[string]string{
-	ABCIPubKeyTypeEd25519:   ed25519.PubKeyName,
-	ABCIPubKeyTypeSecp256k1: secp256k1.PubKeyName,
+var PubKeyTypesToNames = map[string]string{
+    PubKeyTypeEd25519:   ed25519.PubKeyName,
+    PubKeyTypeSecp256k1: secp256k1.PubKeyName,
+    PubKeyTypeKyber:     kyber.PubKeyName,
 }
 
-// ConsensusParams contains consensus critical parameters that determine the
-// validity of blocks.
 type ConsensusParams struct {
-	Block     BlockParams     `json:"block"`
-	Evidence  EvidenceParams  `json:"evidence"`
-	Validator ValidatorParams `json:"validator"`
-	Version   VersionParams   `json:"version"`
+    Block        BlockParams     `json:"block"`
+    Evidence     EvidenceParams  `json:"evidence"`
+    Validator    ValidatorParams `json:"validator"`
+    Version      VersionParams   `json:"version"`
+    QuantumSafe  QuantumParams   `json:"quantum_safe,omitempty"`  // New quantum params
+    AI           AIParams        `json:"ai,omitempty"`           // New AI params
 }
 
-// BlockParams define limits on the block size and gas plus minimum time
-// between blocks.
 type BlockParams struct {
-	MaxBytes int64 `json:"max_bytes"`
-	MaxGas   int64 `json:"max_gas"`
+    MaxBytes        int64 `json:"max_bytes"`
+    MaxGas          int64 `json:"max_gas"`
+    MaxTransactions int64 `json:"max_transactions"` // Added for transaction limiting
 }
 
-// EvidenceParams determine how we handle evidence of malfeasance.
 type EvidenceParams struct {
-	MaxAgeNumBlocks int64         `json:"max_age_num_blocks"` // only accept new evidence more recent than this
-	MaxAgeDuration  time.Duration `json:"max_age_duration"`
-	MaxBytes        int64         `json:"max_bytes"`
+    MaxAgeNumBlocks int64         `json:"max_age_num_blocks"`
+    MaxAgeDuration  time.Duration `json:"max_age_duration"`
+    MaxBytes        int64         `json:"max_bytes"`
 }
 
-// ValidatorParams restrict the public key types validators can use.
-// NOTE: uses ABCI pubkey naming, not Amino names.
 type ValidatorParams struct {
-	PubKeyTypes []string `json:"pub_key_types"`
+    PubKeyTypes []string `json:"pub_key_types"`
 }
 
 type VersionParams struct {
-	App uint64 `json:"app"`
+    App uint64 `json:"app"`
 }
 
-// DefaultConsensusParams returns a default ConsensusParams.
+// New params for quantum-safe features
+type QuantumParams struct {
+    Enabled          bool     `json:"enabled"`
+    MinKeySize       int      `json:"min_key_size"`
+    RequiredKeyTypes []string `json:"required_key_types"`
+}
+
+// New params for AI features
+type AIParams struct {
+    Enabled            bool    `json:"enabled"`
+    MinTrustScore      float64 `json:"min_trust_score"`
+    ValidationInterval int64   `json:"validation_interval"`
+}
+
 func DefaultConsensusParams() *ConsensusParams {
-	return &ConsensusParams{
-		Block:     DefaultBlockParams(),
-		Evidence:  DefaultEvidenceParams(),
-		Validator: DefaultValidatorParams(),
-		Version:   DefaultVersionParams(),
-	}
+    return &ConsensusParams{
+        Block:       DefaultBlockParams(),
+        Evidence:    DefaultEvidenceParams(),
+        Validator:   DefaultValidatorParams(),
+        Version:     DefaultVersionParams(),
+        QuantumSafe: DefaultQuantumParams(),
+        AI:          DefaultAIParams(),
+    }
 }
 
-// DefaultBlockParams returns a default BlockParams.
 func DefaultBlockParams() BlockParams {
-	return BlockParams{
-		MaxBytes: 22020096, // 21MB
-		MaxGas:   -1,
-	}
+    return BlockParams{
+        MaxBytes:        22020096, // 21MB
+        MaxGas:         -1,
+        MaxTransactions: 10000,
+    }
+}
+
+func DefaultQuantumParams() QuantumParams {
+    return QuantumParams{
+        Enabled:          true,
+        MinKeySize:       256,
+        RequiredKeyTypes: []string{PubKeyTypeKyber},
+    }
+}
+
+func DefaultAIParams() AIParams {
+    return AIParams{
+        Enabled:            true,
+        MinTrustScore:      0.7,
+        ValidationInterval: 100,
+    }
+}
+
+func (params ConsensusParams) ValidateBasic() error {
+    if err := validateBlockParams(params.Block); err != nil {
+        return fmt.Errorf("invalid block params: %w", err)
+    }
+
+    if err := validateEvidenceParams(params.Evidence, params.Block); err != nil {
+        return fmt.Errorf("invalid evidence params: %w", err)
+    }
+
+    if err := validateValidatorParams(params.Validator); err != nil {
+        return fmt.Errorf("invalid validator params: %w", err)
+    }
+
+    if params.QuantumSafe.Enabled {
+        if err := validateQuantumParams(params.QuantumSafe); err != nil {
+            return fmt.Errorf("invalid quantum params: %w", err)
+        }
+    }
+
+    if params.AI.Enabled {
+        if err := validateAIParams(params.AI); err != nil {
+            return fmt.Errorf("invalid AI params: %w", err)
+        }
+    }
+
+    return nil
+}
+
+func validateQuantumParams(params QuantumParams) error {
+    if params.MinKeySize < 256 {
+        return fmt.Errorf("minimum key size must be at least 256 bits, got %d", params.MinKeySize)
+    }
+
+    for _, keyType := range params.RequiredKeyTypes {
+        if _, ok := PubKeyTypesToNames[keyType]; !ok {
+            return fmt.Errorf("unknown quantum key type: %s", keyType)
+        }
+    }
+    return nil
+}
+
+func validateAIParams(params AIParams) error {
+    if params.MinTrustScore < 0 || params.MinTrustScore > 1 {
+        return fmt.Errorf("min trust score must be between 0 and 1, got %f", params.MinTrustScore)
+    }
+    if params.ValidationInterval <= 0 {
+        return fmt.Errorf("validation interval must be positive, got %d", params.ValidationInterval)
+    }
+    return nil
 }
 
 // DefaultEvidenceParams returns a default EvidenceParams.
