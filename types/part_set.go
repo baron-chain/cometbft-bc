@@ -1,40 +1,147 @@
 package types
 
 import (
-	"bytes"
-	"errors"
-	"fmt"
-	"io"
+    "bytes"
+    "errors"
+    "fmt"
+    "io"
 
-	"github.com/cometbft/cometbft/crypto/merkle"
-	"github.com/cometbft/cometbft/libs/bits"
-	cmtbytes "github.com/cometbft/cometbft/libs/bytes"
-	cmtjson "github.com/cometbft/cometbft/libs/json"
-	cmtmath "github.com/cometbft/cometbft/libs/math"
-	cmtsync "github.com/cometbft/cometbft/libs/sync"
-	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
+    "github.com/baron-chain/cometbft-bc/crypto/merkle"
+    "github.com/baron-chain/cometbft-bc/crypto/kyber"
+    "github.com/baron-chain/cometbft-bc/libs/bits"
+    bcbytes "github.com/baron-chain/cometbft-bc/libs/bytes"
+    bcjson "github.com/baron-chain/cometbft-bc/libs/json"
+    bcmath "github.com/baron-chain/cometbft-bc/libs/math"
+    bcsync "github.com/baron-chain/cometbft-bc/libs/sync"
+    bcproto "github.com/baron-chain/cometbft-bc/proto/tendermint/types"
 )
 
 var (
-	ErrPartSetUnexpectedIndex = errors.New("error part set unexpected index")
-	ErrPartSetInvalidProof    = errors.New("error part set invalid proof")
+    ErrPartSetUnexpectedIndex = errors.New("part set unexpected index")
+    ErrPartSetInvalidProof    = errors.New("part set invalid proof")
+    ErrPartSetInvalidPQC      = errors.New("part set invalid quantum signature")
 )
 
 type Part struct {
-	Index uint32            `json:"index"`
-	Bytes cmtbytes.HexBytes `json:"bytes"`
-	Proof merkle.Proof      `json:"proof"`
+    Index       uint32            `json:"index"`
+    Bytes       bcbytes.HexBytes  `json:"bytes"`
+    Proof       merkle.Proof      `json:"proof"`
+    PQCSignature bcbytes.HexBytes `json:"pqc_signature,omitempty"` // Quantum-safe signature
 }
 
-// ValidateBasic performs basic validation.
 func (part *Part) ValidateBasic() error {
-	if len(part.Bytes) > int(BlockPartSizeBytes) {
-		return fmt.Errorf("too big: %d bytes, max: %d", len(part.Bytes), BlockPartSizeBytes)
-	}
-	if err := part.Proof.ValidateBasic(); err != nil {
-		return fmt.Errorf("wrong Proof: %w", err)
-	}
-	return nil
+    if len(part.Bytes) > int(BlockPartSizeBytes) {
+        return fmt.Errorf("part too large: %d bytes, max: %d", len(part.Bytes), BlockPartSizeBytes)
+    }
+    
+    if err := part.Proof.ValidateBasic(); err != nil {
+        return fmt.Errorf("invalid proof: %w", err)
+    }
+
+    // Validate quantum signature if present
+    if len(part.PQCSignature) > 0 {
+        if err := kyber.Verify(part.Bytes, part.PQCSignature); err != nil {
+            return fmt.Errorf("invalid quantum signature: %w", err)
+        }
+    }
+
+    return nil
+}
+
+type PartSetHeader struct {
+    Total          uint32            `json:"total"`
+    Hash           bcbytes.HexBytes  `json:"hash"`
+    PQCEnabled     bool              `json:"pqc_enabled,omitempty"`
+}
+
+type PartSet struct {
+    total          uint32
+    hash           []byte
+    pqcEnabled     bool
+
+    mtx            bcsync.Mutex
+    parts          []*Part
+    partsBitArray  *bits.BitArray
+    count          uint32
+    byteSize       int64
+}
+
+func NewPartSetFromData(data []byte, partSize uint32, enablePQC bool) *PartSet {
+    total := (uint32(len(data)) + partSize - 1) / partSize
+    parts := make([]*Part, total)
+    partsBytes := make([][]byte, total)
+    partsBitArray := bits.NewBitArray(int(total))
+
+    for i := uint32(0); i < total; i++ {
+        partBytes := data[i*partSize : bcmath.MinInt(len(data), int((i+1)*partSize))]
+        
+        part := &Part{
+            Index: i,
+            Bytes: partBytes,
+        }
+
+        // Add quantum signatures if enabled
+        if enablePQC {
+            signature, err := kyber.Sign(partBytes)
+            if err == nil {
+                part.PQCSignature = signature
+            }
+        }
+
+        parts[i] = part
+        partsBytes[i] = partBytes
+        partsBitArray.SetIndex(int(i), true)
+    }
+
+    root, proofs := merkle.ProofsFromByteSlices(partsBytes)
+    for i := uint32(0); i < total; i++ {
+        parts[i].Proof = *proofs[i]
+    }
+
+    return &PartSet{
+        total:         total,
+        hash:          root,
+        pqcEnabled:    enablePQC,
+        parts:         parts,
+        partsBitArray: partsBitArray,
+        count:         total,
+        byteSize:      int64(len(data)),
+    }
+}
+
+func (ps *PartSet) AddPart(part *Part) (bool, error) {
+    if ps == nil {
+        return false, nil
+    }
+    
+    ps.mtx.Lock()
+    defer ps.mtx.Unlock()
+
+    if part.Index >= ps.total {
+        return false, ErrPartSetUnexpectedIndex
+    }
+
+    if ps.parts[part.Index] != nil {
+        return false, nil
+    }
+
+    if err := part.Proof.Verify(ps.Hash(), part.Bytes); err != nil {
+        return false, ErrPartSetInvalidProof
+    }
+
+    // Verify quantum signature if enabled
+    if ps.pqcEnabled && len(part.PQCSignature) > 0 {
+        if err := kyber.Verify(part.Bytes, part.PQCSignature); err != nil {
+            return false, ErrPartSetInvalidPQC
+        }
+    }
+
+    ps.parts[part.Index] = part
+    ps.partsBitArray.SetIndex(int(part.Index), true)
+    ps.count++
+    ps.byteSize += int64(len(part.Bytes))
+    
+    return true, nil
 }
 
 // String returns a string representation of Part.
