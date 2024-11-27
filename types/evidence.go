@@ -1,48 +1,121 @@
 package types
 
 import (
-	"bytes"
-	"encoding/binary"
-	"errors"
-	"fmt"
-	"sort"
-	"strings"
-	"time"
+    "bytes"
+    "crypto/sha256"
+    "encoding/binary"
+    "errors"
+    "fmt"
+    "sort"
+    "time"
 
-	abci "github.com/cometbft/cometbft/abci/types"
-	"github.com/cometbft/cometbft/crypto/merkle"
-	"github.com/cometbft/cometbft/crypto/tmhash"
-	cmtjson "github.com/cometbft/cometbft/libs/json"
-	cmtrand "github.com/cometbft/cometbft/libs/rand"
-	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
+    abci "github.com/baron-chain/cometbft-bc/abci/types"
+    "github.com/baron-chain/cometbft-bc/crypto/merkle"
+    "github.com/baron-chain/cometbft-bc/crypto/kyber"
+    "github.com/baron-chain/cometbft-bc/crypto/tmhash"
+    bcjson "github.com/baron-chain/cometbft-bc/libs/json"
+    bcrand "github.com/baron-chain/cometbft-bc/libs/rand"
+    bcproto "github.com/baron-chain/cometbft-bc/proto/tendermint/types"
 )
 
-// Evidence represents any provable malicious activity by a validator.
-// Verification logic for each evidence is part of the evidence module.
 type Evidence interface {
-	ABCI() []abci.Misbehavior // forms individual evidence to be sent to the application
-	Bytes() []byte            // bytes which comprise the evidence
-	Hash() []byte             // hash of the evidence
-	Height() int64            // height of the infraction
-	String() string           // string format of the evidence
-	Time() time.Time          // time of the infraction
-	ValidateBasic() error     // basic consistency check
+    ABCI() []abci.Misbehavior
+    Bytes() []byte
+    Hash() []byte
+    Height() int64
+    String() string
+    Time() time.Time
+    ValidateBasic() error
+    VerifyPQC() error // New method for quantum-safe verification
 }
 
-//--------------------------------------------------------------------------------------
-
-// DuplicateVoteEvidence contains evidence of a single validator signing two conflicting votes.
 type DuplicateVoteEvidence struct {
-	VoteA *Vote `json:"vote_a"`
-	VoteB *Vote `json:"vote_b"`
-
-	// abci specific information
-	TotalVotingPower int64
-	ValidatorPower   int64
-	Timestamp        time.Time
+    VoteA *Vote
+    VoteB *Vote
+    TotalVotingPower int64
+    ValidatorPower   int64
+    Timestamp        time.Time
+    PQCSignature     []byte // Quantum-safe signature
 }
 
-var _ Evidence = &DuplicateVoteEvidence{}
+func NewDuplicateVoteEvidence(vote1, vote2 *Vote, blockTime time.Time, valSet *ValidatorSet) (*DuplicateVoteEvidence, error) {
+    if vote1 == nil || vote2 == nil {
+        return nil, errors.New("missing vote")
+    }
+    if valSet == nil {
+        return nil, errors.New("missing validator set")
+    }
+
+    idx, val := valSet.GetByAddress(vote1.ValidatorAddress)
+    if idx == -1 {
+        return nil, fmt.Errorf("validator %s not in validator set", vote1.ValidatorAddress)
+    }
+
+    var voteA, voteB *Vote
+    if bytes.Compare(vote1.BlockID.Hash, vote2.BlockID.Hash) == -1 {
+        voteA = vote1
+        voteB = vote2
+    } else {
+        voteA = vote2
+        voteB = vote1
+    }
+
+    // Generate quantum-safe signature
+    pqcSig, err := kyber.Sign(val.PubKey, append(voteA.Bytes(), voteB.Bytes()...))
+    if err != nil {
+        return nil, fmt.Errorf("quantum signature generation failed: %w", err)
+    }
+
+    return &DuplicateVoteEvidence{
+        VoteA:            voteA,
+        VoteB:            voteB,
+        TotalVotingPower: valSet.TotalVotingPower(),
+        ValidatorPower:   val.VotingPower,
+        Timestamp:        blockTime,
+        PQCSignature:     pqcSig,
+    }, nil
+}
+
+func (dve *DuplicateVoteEvidence) VerifyPQC() error {
+    data := append(dve.VoteA.Bytes(), dve.VoteB.Bytes()...)
+    if !kyber.Verify(dve.VoteA.ValidatorAddress, data, dve.PQCSignature) {
+        return errors.New("invalid quantum signature")
+    }
+    return nil
+}
+
+type EvidenceList []Evidence
+
+func (evl EvidenceList) Hash() []byte {
+    evidences := make([][]byte, len(evl))
+    for i, ev := range evl {
+        evidences[i] = ev.Hash()
+    }
+    return merkle.SimpleHashFromByteSlices(evidences)
+}
+
+func (evl EvidenceList) ValidateBasic() error {
+    seen := make(map[string]bool)
+    for _, ev := range evl {
+        if err := ev.ValidateBasic(); err != nil {
+            return fmt.Errorf("invalid evidence (%v): %w", ev, err)
+        }
+        
+        // Verify quantum signatures
+        if err := ev.VerifyPQC(); err != nil {
+            return fmt.Errorf("quantum signature verification failed (%v): %w", ev, err)
+        }
+
+        // Prevent duplicate evidence
+        hash := string(ev.Hash())
+        if seen[hash] {
+            return fmt.Errorf("duplicate evidence: %v", ev)
+        }
+        seen[hash] = true
+    }
+    return nil
+}
+
 
 // NewDuplicateVoteEvidence creates DuplicateVoteEvidence with right ordering given
 // two conflicting votes. If either of the votes is nil, the val set is nil or the voter is
