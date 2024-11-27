@@ -1,41 +1,69 @@
 package types
 
-import "fmt"
-
-type (
-	// ErrInvalidCommitHeight is returned when we encounter a commit with an
-	// unexpected height.
-	ErrInvalidCommitHeight struct {
-		Expected int64
-		Actual   int64
-	}
-
-	// ErrInvalidCommitSignatures is returned when we encounter a commit where
-	// the number of signatures doesn't match the number of validators.
-	ErrInvalidCommitSignatures struct {
-		Expected int
-		Actual   int
-	}
+import (
+    "fmt"
+    "github.com/baron-chain/cometbft-bc/crypto/kyber"
 )
 
-func NewErrInvalidCommitHeight(expected, actual int64) ErrInvalidCommitHeight {
-	return ErrInvalidCommitHeight{
-		Expected: expected,
-		Actual:   actual,
-	}
+type (
+    // CommitHeightError represents mismatch between expected and actual commit heights
+    CommitHeightError struct {
+        Expected int64
+        Actual   int64 
+    }
+
+    // CommitSignatureError represents mismatch between expected and actual signature counts
+    CommitSignatureError struct {
+        Expected int
+        Actual   int
+    }
+
+    // PQCError represents quantum cryptography related errors
+    PQCError struct {
+        Msg string
+        Err error 
+    }
+)
+
+func NewCommitHeightError(expected, actual int64) CommitHeightError {
+    return CommitHeightError{
+        Expected: expected,
+        Actual:   actual,
+    }
 }
 
-func (e ErrInvalidCommitHeight) Error() string {
-	return fmt.Sprintf("Invalid commit -- wrong height: %v vs %v", e.Expected, e.Actual)
+func (e CommitHeightError) Error() string {
+    return fmt.Sprintf("commit height mismatch - expected: %d, got: %d", e.Expected, e.Actual)
 }
 
-func NewErrInvalidCommitSignatures(expected, actual int) ErrInvalidCommitSignatures {
-	return ErrInvalidCommitSignatures{
-		Expected: expected,
-		Actual:   actual,
-	}
+func NewCommitSignatureError(expected, actual int) CommitSignatureError {
+    return CommitSignatureError{
+        Expected: expected,
+        Actual:   actual,
+    }
 }
 
-func (e ErrInvalidCommitSignatures) Error() string {
-	return fmt.Sprintf("Invalid commit -- wrong set size: %v vs %v", e.Expected, e.Actual)
+func (e CommitSignatureError) Error() string {
+    return fmt.Sprintf("invalid signature count - expected: %d, got: %d", e.Expected, e.Actual) 
+}
+
+func NewPQCError(msg string, err error) PQCError {
+    return PQCError{
+        Msg: msg,
+        Err: err,
+    }
+}
+
+func (e PQCError) Error() string {
+    if e.Err != nil {
+        return fmt.Sprintf("PQC error: %s - %v", e.Msg, e.Err)
+    }
+    return fmt.Sprintf("PQC error: %s", e.Msg)
+}
+
+func VerifyPQCCommit(commit []byte, pubKey kyber.PublicKey) error {
+    if !kyber.Verify(pubKey, commit) {
+        return NewPQCError("failed to verify quantum signature", nil)
+    }
+    return nil
 }
