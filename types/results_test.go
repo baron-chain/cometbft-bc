@@ -17,7 +17,6 @@ func TestABCIResults(t *testing.T) {
 	e := &abci.ResponseDeliverTx{Code: 14, Data: []byte("foo")}
 	f := &abci.ResponseDeliverTx{Code: 14, Data: []byte("bar")}
 
-	// Nil and []byte{} should produce the same bytes
 	bzA, err := a.Marshal()
 	require.NoError(t, err)
 	bzB, err := b.Marshal()
