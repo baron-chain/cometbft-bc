@@ -8,8 +8,6 @@ import (
 // ABCIResults wraps the deliver tx results to return a proof.
 type ABCIResults []*abci.ResponseDeliverTx
 
-// NewResults strips non-deterministic fields from ResponseDeliverTx responses
-// and returns ABCIResults.
 func NewResults(responses []*abci.ResponseDeliverTx) ABCIResults {
 	res := make(ABCIResults, len(responses))
 	for i, d := range responses {
