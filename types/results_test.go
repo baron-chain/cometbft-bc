@@ -24,10 +24,8 @@ func TestABCIResults(t *testing.T) {
 
 	require.Equal(t, bzA, bzB)
 
-	// a and b should be the same, don't go in results.
 	results := ABCIResults{a, c, d, e, f}
 
-	// Make sure each result serializes differently
 	last := []byte{}
 	assert.Equal(t, last, bzA) // first one is empty
 	for i, res := range results[1:] {
