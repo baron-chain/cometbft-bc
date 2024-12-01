@@ -29,7 +29,6 @@ func TestBasicPartSet(t *testing.T) {
 	assert.EqualValues(t, nParts, partSet.Count())
 	assert.EqualValues(t, testPartSize*nParts, partSet.ByteSize())
 
-	// Test adding parts to a new partSet.
 	partSet2 := NewPartSetFromHeader(partSet.Header())
 
 	assert.True(t, partSet2.HasHeader(partSet.Header()))
