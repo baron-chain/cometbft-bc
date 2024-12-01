@@ -9,8 +9,6 @@ import (
 
 //-------------------------------------------------------
 
-// TM2PB is used for converting CometBFT ABCI to protobuf ABCI.
-// UNSTABLE
 var TM2PB = tm2pb{}
 
 type tm2pb struct{}
