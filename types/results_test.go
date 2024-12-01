@@ -36,7 +36,6 @@ func TestABCIResults(t *testing.T) {
 		last = bz
 	}
 
-	// Make sure that we can get a root hash from results and verify proofs.
 	root := results.Hash()
 	assert.NotEmpty(t, root)
 
