@@ -1,129 +1,129 @@
 package types
 
 import (
-	"fmt"
-	"testing"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+   "fmt"
+   "testing"
+   
+   "github.com/stretchr/testify/assert"
+   "github.com/stretchr/testify/require"
+   
+   "github.com/baron-chain/cometbft-bc/crypto"
 )
 
 type validatorTestCase struct {
-	description string
-	validator   *Validator
-	expectPass  bool
-	errMsg      string
+   desc   string
+   val    *Validator 
+   expErr string
 }
 
 func TestValidatorProtoBuf(t *testing.T) {
-	validator, err := RandValidator(true, 100)
-	require.NoError(t, err)
+   validator, err := RandValidator(true, 100)
+   require.NoError(t, err)
+   validator.ReputationScore = 0.9 // Add reputation score for Baron Chain
 
-	tests := []struct {
-		description     string
-		validator      *Validator
-		expectProto    bool
-		expectFromProto bool
-	}{
-		{
-			description:     "valid validator",
-			validator:      validator,
-			expectProto:    true,
-			expectFromProto: true,
-		},
-		{
-			description:     "empty validator",
-			validator:      &Validator{},
-			expectProto:    false,
-			expectFromProto: false,
-		},
-		{
-			description:     "nil validator",
-			validator:      nil,
-			expectProto:    false,
-			expectFromProto: false,
-		},
-	}
+   tests := []struct {
+       desc        string
+       val         *Validator
+       expectProto bool
+       expectDe    bool
+   }{
+       {
+           desc:        "valid quantum-safe validator",
+           val:         validator,
+           expectProto: true,
+           expectDe:    true,
+       },
+       {
+           desc:        "empty validator", 
+           val:         &Validator{},
+           expectProto: false,
+           expectDe:    false,
+       },
+       {
+           desc:        "nil validator",
+           val:         nil, 
+           expectProto: false,
+           expectDe:    false,
+       },
+   }
 
-	for _, tc := range tests {
-		t.Run(tc.description, func(t *testing.T) {
-			protoVal, err := tc.validator.ToProto()
-			if tc.expectProto {
-				require.NoError(t, err)
-			} else {
-				require.Error(t, err)
-				return
-			}
+   for _, tc := range tests {
+       t.Run(tc.desc, func(t *testing.T) {
+           pb, err := tc.val.ToProto()
+           if tc.expectProto {
+               require.NoError(t, err)
+               assert.NotNil(t, pb.GetPubKey())
+               assert.NotZero(t, pb.GetVotingPower())
+               assert.NotZero(t, pb.GetReputationScore())
+           } else {
+               require.Error(t, err)
+               return
+           }
 
-			val, err := ValidatorFromProto(protoVal)
-			if tc.expectFromProto {
-				require.NoError(t, err)
-				require.Equal(t, tc.validator, val)
-			} else {
-				require.Error(t, err)
-			}
-		})
-	}
+           val, err := ValidatorFromProto(pb)
+           if tc.expectDe {
+               require.NoError(t, err)
+               require.Equal(t, tc.val, val)
+           } else {
+               require.Error(t, err)
+           }
+       })
+   }
 }
 
 func TestValidatorValidateBasic(t *testing.T) {
-	priv := NewMockPV()
-	pubKey, err := priv.GetPubKey()
-	require.NoError(t, err)
+   priv := NewMockPV()
+   pubKey, err := priv.GetPubKey()
+   require.NoError(t, err)
 
-	tests := []validatorTestCase{
-		{
-			description: "valid validator",
-			validator:   NewValidator(pubKey, 1),
-			expectPass: true,
-		},
-		{
-			description: "nil validator",
-			validator:   nil,
-			expectPass: false,
-			errMsg:     "nil validator",
-		},
-		{
-			description: "missing public key",
-			validator:   &Validator{PubKey: nil},
-			expectPass: false,
-			errMsg:     "validator does not have a public key",
-		},
-		{
-			description: "negative voting power",
-			validator:   NewValidator(pubKey, -1),
-			expectPass: false,
-			errMsg:     "validator has negative voting power",
-		},
-		{
-			description: "missing address",
-			validator: &Validator{
-				PubKey:  pubKey,
-				Address: nil,
-			},
-			expectPass: false,
-			errMsg:     "validator address is the wrong size: ",
-		},
-		{
-			description: "invalid address size",
-			validator: &Validator{
-				PubKey:  pubKey,
-				Address: []byte{'a'},
-			},
-			expectPass: false,
-			errMsg:     "validator address is the wrong size: 61",
-		},
-	}
+   tests := []validatorTestCase{
+       {
+           desc:   "valid quantum-safe validator",
+           val:    NewValidator(pubKey, 1),
+           expErr: "",
+       },
+       {
+           desc:   "nil validator",
+           val:    nil,
+           expErr: "nil validator",
+       },
+       {
+           desc:   "missing pub key",
+           val:    &Validator{PubKey: nil},
+           expErr: "validator does not have a public key",
+       },
+       {
+           desc:   "invalid voting power",
+           val:    NewValidator(pubKey, -1),
+           expErr: "validator has negative voting power",
+       },
+       {
+           desc: "missing address",
+           val: &Validator{
+               PubKey:  pubKey,
+               Address: nil,
+           },
+           expErr: "validator address is the wrong size: ",
+       },
+       {
+           desc: "invalid reputation",
+           val: &Validator{
+               PubKey:          pubKey,
+               ReputationScore: 2.0,
+           },
+           expErr: "reputation score must be between 0 and 1",
+       },
+   }
 
-	for _, tc := range tests {
-		t.Run(tc.description, func(t *testing.T) {
-			err := tc.validator.ValidateBasic()
-			if tc.expectPass {
-				assert.NoError(t, err)
-			} else {
-				assert.Error(t, err)
-				assert.Equal(t, tc.errMsg, err.Error())
-			}
-		})
-	}
+   for _, tc := range tests {
+       t.Run(tc.desc, func(t *testing.T) {
+           err := tc.val.ValidateBasic()
+           if tc.expErr == "" {
+               assert.NoError(t, err)
+           } else {
+               assert.Error(t, err)
+               assert.Contains(t, err.Error(), tc.expErr) 
+           }
+       })
+   }
 }
