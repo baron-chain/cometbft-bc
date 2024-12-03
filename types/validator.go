@@ -6,17 +6,18 @@ import (
    "fmt"
    "strings"
    
-   "github.com/cometbft/cometbft/crypto"
-   ce "github.com/cometbft/cometbft/crypto/encoding"
-   cmtrand "github.com/cometbft/cometbft/libs/rand"
-   cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
+   "github.com/baron-chain/cometbft-bc/crypto"
+   ce "github.com/baron-chain/cometbft-bc/crypto/encoding" 
+   bcrand "github.com/baron-chain/cometbft-bc/libs/rand"
+   bcproto "github.com/baron-chain/cometbft-bc/proto/baronchain/types"
 )
 
 type Validator struct {
-   Address     Address       `json:"address"`
-   PubKey      crypto.PubKey `json:"pub_key"`
-   VotingPower int64        `json:"voting_power"`
-   ProposerPriority int64   `json:"proposer_priority"`
+   Address          Address       `json:"address"`
+   PubKey          crypto.PubKey `json:"pub_key"`
+   VotingPower     int64         `json:"voting_power"`
+   ProposerPriority int64        `json:"proposer_priority"`
+   ReputationScore float64       `json:"reputation_score"`
 }
 
 func NewValidator(pubKey crypto.PubKey, votingPower int64) *Validator {
@@ -25,6 +26,7 @@ func NewValidator(pubKey crypto.PubKey, votingPower int64) *Validator {
        PubKey:          pubKey,
        VotingPower:     votingPower,
        ProposerPriority: 0,
+       ReputationScore: 1.0,
    }
 }
 
@@ -33,13 +35,16 @@ func (v *Validator) ValidateBasic() error {
        return errors.New("nil validator")
    }
    if v.PubKey == nil {
-       return errors.New("validator does not have a public key")
+       return errors.New("missing public key")
    }
    if v.VotingPower < 0 {
-       return errors.New("validator has negative voting power") 
+       return errors.New("negative voting power")
+   }
+   if v.ReputationScore < 0 || v.ReputationScore > 1 {
+       return errors.New("reputation score must be between 0 and 1")
    }
    if len(v.Address) != crypto.AddressSize {
-       return fmt.Errorf("validator address is the wrong size: %v", v.Address)
+       return fmt.Errorf("invalid address size: %v", v.Address)
    }
    return nil
 }
@@ -53,20 +58,17 @@ func (v *Validator) CompareProposerPriority(other *Validator) *Validator {
    if v == nil {
        return other
    }
-   if v.ProposerPriority > other.ProposerPriority {
-       return v
-   }
-   if v.ProposerPriority < other.ProposerPriority {
-       return other
-   }
-   result := bytes.Compare(v.Address, other.Address)
+   
    switch {
-   case result < 0:
+   case v.ProposerPriority > other.ProposerPriority:
        return v
-   case result > 0:
+   case v.ProposerPriority < other.ProposerPriority:
        return other
    default:
-       panic("Cannot compare identical validators")
+       if bytes.Compare(v.Address, other.Address) < 0 {
+           return v
+       }
+       return other
    }
 }
 
@@ -74,22 +76,33 @@ func (v *Validator) String() string {
    if v == nil {
        return "nil-Validator"
    }
-   return fmt.Sprintf("Validator{%v %v VP:%v A:%v}",
-       v.Address, v.PubKey, v.VotingPower, v.ProposerPriority)
+   return fmt.Sprintf("Validator{%v PubKey:%v Power:%v Priority:%v Rep:%.2f}",
+       v.Address, v.PubKey, v.VotingPower, v.ProposerPriority, v.ReputationScore)
 }
 
 func ValidatorListString(vals []*Validator) string {
    chunks := make([]string, len(vals))
    for i, val := range vals {
-       chunks[i] = fmt.Sprintf("%s:%d", val.Address, val.VotingPower)
+       chunks[i] = fmt.Sprintf("%s:%d:%.2f", val.Address, val.VotingPower, val.ReputationScore)
    }
    return strings.Join(chunks, ",")
 }
 
-func (v *Validator) Bytes() []byte {
+func (v *Validator) ToProto() (*bcproto.Validator, error) {
+   if v == nil {
+       return nil, errors.New("nil validator")
+   }
+   
    pk, err := ce.PubKeyToProto(v.PubKey)
    if err != nil {
-       panic(err)
+       return nil, fmt.Errorf("converting pubkey: %w", err)
    }
-
-   pbv := cmtprot
+   
+   return &bcproto.Validator{
+       Address:          v.Address,
+       PubKey:          pk,
+       VotingPower:     v.VotingPower, 
+       ProposerPriority: v.ProposerPriority,
+       ReputationScore:  v.ReputationScore,
+   }, nil
+}
