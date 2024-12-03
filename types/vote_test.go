@@ -1,19 +1,110 @@
 package types
 
 import (
-	"testing"
-	"time"
+   "testing"
+   "time"
 
-	"github.com/cosmos/gogoproto/proto"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+   "github.com/stretchr/testify/assert" 
+   "github.com/stretchr/testify/require"
 
-	"github.com/cometbft/cometbft/crypto"
-	"github.com/cometbft/cometbft/crypto/ed25519"
-	"github.com/cometbft/cometbft/crypto/tmhash"
-	"github.com/cometbft/cometbft/libs/protoio"
-	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
+   "github.com/baron-chain/cometbft-bc/crypto"
+   "github.com/baron-chain/cometbft-bc/crypto/ed25519"
+   "github.com/baron-chain/cometbft-bc/crypto/tmhash"
+   "github.com/baron-chain/cometbft-bc/libs/protoio"
+   bcproto "github.com/baron-chain/cometbft-bc/proto/baronchain/types"
 )
+
+func exampleVote(t bcproto.SignedMsgType) *Vote {
+   stamp, _ := time.Parse(TimeFormat, "2017-12-25T03:00:01.234Z")
+   return &Vote{
+       Type:      t,
+       Height:    12345,
+       Round:     2,
+       Timestamp: stamp,
+       BlockID: BlockID{
+           Hash: tmhash.Sum([]byte("blockID_hash")),
+           PartSetHeader: PartSetHeader{
+               Total: 1000000,
+               Hash:  tmhash.Sum([]byte("blockID_part_set_header_hash")),
+           },
+       },
+       ValidatorAddress: crypto.AddressHash([]byte("validator_address")),
+       ValidatorIndex:   56789,
+       AiConfidence:    0.95, // Added AI confidence
+       QuantumSig:      []byte("quantum-signature"), // Added quantum signature
+   }
+}
+
+func TestVoteValidation(t *testing.T) {
+   privVal := NewMockPV()
+   pubkey, err := privVal.GetPubKey()
+   require.NoError(t, err)
+
+   testCases := []struct {
+       name string
+       malleate func(*Vote)
+       wantErr bool
+   }{
+       {"valid vote", func(v *Vote) {}, false},
+       {"negative height", func(v *Vote) { v.Height = -1 }, true},
+       {"negative round", func(v *Vote) { v.Round = -1 }, true},
+       {"invalid address", func(v *Vote) { v.ValidatorAddress = []byte{1} }, true},
+       {"invalid signature", func(v *Vote) { v.Signature = nil }, true},
+       {"too large signature", func(v *Vote) { v.Signature = make([]byte, MaxSignatureSize+1) }, true},
+       {"invalid quantum signature", func(v *Vote) { v.QuantumSig = nil }, true},
+       {"invalid AI confidence", func(v *Vote) { v.AiConfidence = 1.5 }, true},
+   }
+
+   for _, tc := range testCases {
+       t.Run(tc.name, func(t *testing.T) {
+           vote := exampleVote(bcproto.PrecommitType)
+           v := vote.ToProto()
+           err := privVal.SignVote("test_chain", v)
+           require.NoError(t, err)
+           vote.Signature = v.Signature
+
+           tc.malleate(vote)
+           err = vote.ValidateBasic() 
+           if tc.wantErr {
+               assert.Error(t, err)
+           } else {
+               assert.NoError(t, err)
+           }
+       })
+   }
+}
+
+func TestVoteVerification(t *testing.T) {
+   privVal := NewMockPV()
+   pubkey, err := privVal.GetPubKey() 
+   require.NoError(t, err)
+
+   vote := exampleVote(bcproto.PrecommitType)
+   vote.ValidatorAddress = pubkey.Address()
+   v := vote.ToProto()
+
+   signBytes := VoteSignBytes("test_chain", v)
+   err = privVal.SignVote("test_chain", v)
+   require.NoError(t, err)
+
+   // Verify quantum signature
+   err = vote.VerifyQuantumSignature()
+   require.NoError(t, err)
+
+   // Verify standard signature
+   valid := pubkey.VerifySignature(signBytes, v.Signature)
+   require.True(t, valid)
+
+   // Verify with invalid pubkey
+   err = vote.Verify("test_chain", ed25519.GenPrivKey().PubKey())
+   assert.Equal(t, ErrVoteInvalidValidatorAddress, err)
+}
+
+func TestVoteString(t *testing.T) {
+   vote := exampleVote(bcproto.PrecommitType)
+   expected := `Vote{56789:6AF1F4 12345/02/PRECOMMIT AI:0.95 @ 2017-12-25T03:00:01.234Z}`
+   assert.Equal(t, expected, vote.String())
+}
 
 func examplePrevote() *Vote {
 	return exampleVote(byte(cmtproto.PrevoteType))
