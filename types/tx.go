@@ -12,7 +12,6 @@ import (
 	cmtproto "github.com/baron-chain/cometbft-bc/proto/tendermint/types"
 )
 
-// TxKeySize is the size of the transaction key index
 const TxKeySize = sha256.Size
 
 type (
