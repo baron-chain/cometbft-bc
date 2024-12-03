@@ -1,17 +1,155 @@
 package types
 
 import (
-	"bytes"
-	"testing"
+   "bytes"
+   "testing" 
+   "time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+   "github.com/stretchr/testify/assert"
+   "github.com/stretchr/testify/require"
 
-	"github.com/cometbft/cometbft/crypto"
-	cmtrand "github.com/cometbft/cometbft/libs/rand"
-	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
-	cmttime "github.com/cometbft/cometbft/types/time"
+   "github.com/baron-chain/cometbft-bc/crypto"
+   bcrand "github.com/baron-chain/cometbft-bc/libs/rand"
+   bcproto "github.com/baron-chain/cometbft-bc/proto/baronchain/types"
+   bctime "github.com/baron-chain/cometbft-bc/types/time"
 )
+
+func TestVoteSetAddVote(t *testing.T) {
+   height, round := int64(1), int32(0)
+   voteSet, _, vals := randVoteSet(height, round, bcproto.PrevoteType, 10, 1)
+   val := vals[0]
+   
+   pubKey, err := val.GetPubKey()
+   require.NoError(t, err)
+   addr := pubKey.Address()
+
+   vote := &Vote{
+       ValidatorAddress: addr,
+       ValidatorIndex:   0,
+       Height:          height,
+       Round:           round,
+       Type:           bcproto.PrevoteType,
+       Timestamp:       bctime.Now(),
+       BlockID:         BlockID{},
+       AiConfidence:    0.9, // Added AI confidence
+       QuantumSig:      []byte("quantum-sig"), // Added quantum signature
+   }
+
+   assert.Nil(t, voteSet.GetByAddress(addr))
+   
+   added, err := signAddVote(val, vote, voteSet)
+   require.NoError(t, err)
+   assert.True(t, added)
+
+   assert.NotNil(t, voteSet.GetByAddress(addr))
+   assert.True(t, voteSet.BitArray().GetIndex(0))
+}
+
+func TestVoteSetInvalidVotes(t *testing.T) {
+   height, round := int64(1), int32(0) 
+   voteSet, _, vals := randVoteSet(height, round, bcproto.PrevoteType, 10, 1)
+
+   baseVote := &Vote{
+       ValidatorAddress: nil,
+       ValidatorIndex:   -1,
+       Height:          height,
+       Round:           round,
+       Type:           bcproto.PrevoteType,
+       Timestamp:       bctime.Now(),
+       BlockID:         BlockID{},
+       AiConfidence:    0.9,
+       QuantumSig:      []byte("quantum-sig"),
+   }
+
+   tests := []struct {
+       name string
+       vote *Vote 
+       expectErr bool
+   }{
+       {
+           name: "invalid validator address",
+           vote: withValidator(baseVote, []byte("wrong"), 0),
+           expectErr: true,
+       },
+       {
+           name: "invalid height",
+           vote: withHeight(baseVote, height+1),
+           expectErr: true, 
+       },
+       {
+           name: "invalid round",
+           vote: withRound(baseVote, round+1),
+           expectErr: true,
+       },
+       {
+           name: "invalid confidence",
+           vote: withAiConfidence(baseVote, 1.5),
+           expectErr: true,
+       },
+   }
+
+   for _, tc := range tests {
+       t.Run(tc.name, func(t *testing.T) {
+           pubKey, err := vals[0].GetPubKey()
+           require.NoError(t, err)
+           
+           vote := withValidator(tc.vote, pubKey.Address(), 0)
+           added, err := signAddVote(vals[0], vote, voteSet)
+           
+           if tc.expectErr {
+               assert.Error(t, err)
+               assert.False(t, added)
+           } else {
+               assert.NoError(t, err)
+               assert.True(t, added)
+           }
+       })
+   }
+}
+
+func TestVoteSetAIWeightedMajority(t *testing.T) {
+   height, round := int64(1), int32(0)
+   voteSet, _, vals := randVoteSet(height, round, bcproto.PrevoteType, 10, 1)
+   blockHash := bcrand.Bytes(32)
+
+   // Add votes with different AI confidence scores
+   for i := 0; i < 7; i++ {
+       pubKey, err := vals[i].GetPubKey()
+       require.NoError(t, err)
+       
+       vote := &Vote{
+           ValidatorAddress: pubKey.Address(),
+           ValidatorIndex:   int32(i),
+           Height:          height,
+           Round:           round,
+           Type:           bcproto.PrevoteType, 
+           BlockID:         BlockID{Hash: blockHash},
+           AiConfidence:    float64(i) / 10.0,
+           QuantumSig:      []byte("quantum-sig"),
+       }
+
+       added, err := signAddVote(vals[i], vote, voteSet)
+       require.NoError(t, err)
+       assert.True(t, added)
+   }
+
+   // Verify AI-weighted majority
+   blockID, ok := voteSet.TwoThirdsMajorityWithAI() 
+   assert.True(t, ok)
+   assert.Equal(t, blockHash, blockID.Hash)
+}
+
+// Helper functions
+func withAiConfidence(vote *Vote, confidence float64) *Vote {
+   vote = vote.Copy()
+   vote.AiConfidence = confidence
+   return vote
+}
+
+func randVoteSet(height int64, round int32, voteType bcproto.SignedMsgType, numVals int, power int64) (*VoteSet, *ValidatorSet, []PrivValidator) {
+   valSet, privVals := RandValidatorSet(numVals, power)
+   return NewVoteSet("test_chain", height, round, voteType, valSet), valSet, privVals
+}
 
 func TestVoteSet_AddVote_Good(t *testing.T) {
 	height, round := int64(1), int32(0)
