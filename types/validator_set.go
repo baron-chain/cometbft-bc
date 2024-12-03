@@ -1,180 +1,82 @@
 package types
 
 import (
-	"bytes"
-	"errors"
-	"fmt"
-	"math"
-	"math/big"
-	"sort"
-	"strings"
+    "bytes"
+    "errors"
+    "fmt"
+    "math"
+    "sort"
+    "strings"
 
-	"github.com/cometbft/cometbft/crypto/merkle"
-	cmtmath "github.com/cometbft/cometbft/libs/math"
-	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
+    "github.com/baron-chain/cometbft-bc/crypto/merkle"
+    bcmath "github.com/baron-chain/cometbft-bc/libs/math"
+    bcproto "github.com/baron-chain/cometbft-bc/proto/baronchain/types"
 )
 
 const (
-	// MaxTotalVotingPower - the maximum allowed total voting power.
-	// It needs to be sufficiently small to, in all cases:
-	// 1. prevent clipping in incrementProposerPriority()
-	// 2. let (diff+diffMax-1) not overflow in IncrementProposerPriority()
-	// (Proof of 1 is tricky, left to the reader).
-	// It could be higher, but this is sufficiently large for our purposes,
-	// and leaves room for defensive purposes.
-	MaxTotalVotingPower = int64(math.MaxInt64) / 8
-
-	// PriorityWindowSizeFactor - is a constant that when multiplied with the
-	// total voting power gives the maximum allowed distance between validator
-	// priorities.
-	PriorityWindowSizeFactor = 2
+    MaxTotalVotingPower        = int64(math.MaxInt64) / 8
+    PriorityWindowSizeFactor   = 2
 )
 
-// ErrTotalVotingPowerOverflow is returned if the total voting power of the
-// resulting validator set exceeds MaxTotalVotingPower.
-var ErrTotalVotingPowerOverflow = fmt.Errorf("total voting power of resulting valset exceeds max %d",
-	MaxTotalVotingPower)
-
-// ValidatorSet represent a set of *Validator at a given height.
-//
-// The validators can be fetched by address or index.
-// The index is in order of .VotingPower, so the indices are fixed for all
-// rounds of a given blockchain height - ie. the validators are sorted by their
-// voting power (descending). Secondary index - .Address (ascending).
-//
-// On the other hand, the .ProposerPriority of each validator and the
-// designated .GetProposer() of a set changes every round, upon calling
-// .IncrementProposerPriority().
-//
-// NOTE: Not goroutine-safe.
-// NOTE: All get/set to validators should copy the value for safety.
 type ValidatorSet struct {
-	// NOTE: persisted via reflect, must be exported.
-	Validators []*Validator `json:"validators"`
-	Proposer   *Validator   `json:"proposer"`
-
-	// cached (unexported)
-	totalVotingPower int64
+    Validators       []*Validator `json:"validators"`
+    Proposer        *Validator   `json:"proposer"`
+    totalVotingPower int64
 }
 
-// NewValidatorSet initializes a ValidatorSet by copying over the values from
-// `valz`, a list of Validators. If valz is nil or empty, the new ValidatorSet
-// will have an empty list of Validators.
-//
-// The addresses of validators in `valz` must be unique otherwise the function
-// panics.
-//
-// Note the validator set size has an implied limit equal to that of the
-// MaxVotesCount - commits by a validator set larger than this will fail
-// validation.
 func NewValidatorSet(valz []*Validator) *ValidatorSet {
-	vals := &ValidatorSet{}
-	err := vals.updateWithChangeSet(valz, false)
-	if err != nil {
-		panic(fmt.Sprintf("Cannot create validator set: %v", err))
-	}
-	if len(valz) > 0 {
-		vals.IncrementProposerPriority(1)
-	}
-	return vals
+    vals := &ValidatorSet{}
+    if err := vals.updateWithChangeSet(valz, false); err != nil {
+        panic(fmt.Sprintf("Cannot create validator set: %v", err))
+    }
+    if len(valz) > 0 {
+        vals.IncrementProposerPriority(1)
+    }
+    return vals
 }
 
 func (vals *ValidatorSet) ValidateBasic() error {
-	if vals.IsNilOrEmpty() {
-		return errors.New("validator set is nil or empty")
-	}
+    if vals.IsNilOrEmpty() {
+        return errors.New("validator set is nil or empty")
+    }
 
-	for idx, val := range vals.Validators {
-		if err := val.ValidateBasic(); err != nil {
-			return fmt.Errorf("invalid validator #%d: %w", idx, err)
-		}
-	}
+    for idx, val := range vals.Validators {
+        if err := val.ValidateBasic(); err != nil {
+            return fmt.Errorf("invalid validator #%d: %w", idx, err)
+        }
+    }
 
-	if err := vals.Proposer.ValidateBasic(); err != nil {
-		return fmt.Errorf("proposer failed validate basic, error: %w", err)
-	}
-
-	return nil
+    return vals.Proposer.ValidateBasic()
 }
 
-// IsNilOrEmpty returns true if validator set is nil or empty.
 func (vals *ValidatorSet) IsNilOrEmpty() bool {
-	return vals == nil || len(vals.Validators) == 0
+    return vals == nil || len(vals.Validators) == 0 
 }
 
-// CopyIncrementProposerPriority increments ProposerPriority and updates the
-// proposer on a copy, and returns it.
 func (vals *ValidatorSet) CopyIncrementProposerPriority(times int32) *ValidatorSet {
-	copy := vals.Copy()
-	copy.IncrementProposerPriority(times)
-	return copy
+    copy := vals.Copy()
+    copy.IncrementProposerPriority(times)
+    return copy
 }
 
-// IncrementProposerPriority increments ProposerPriority of each validator and
-// updates the proposer. Panics if validator set is empty.
-// `times` must be positive.
 func (vals *ValidatorSet) IncrementProposerPriority(times int32) {
-	if vals.IsNilOrEmpty() {
-		panic("empty validator set")
-	}
-	if times <= 0 {
-		panic("Cannot call IncrementProposerPriority with non-positive times")
-	}
+    if vals.IsNilOrEmpty() {
+        panic("empty validator set")
+    }
+    if times <= 0 {
+        panic("times must be positive")
+    }
 
-	// Cap the difference between priorities to be proportional to 2*totalPower by
-	// re-normalizing priorities, i.e., rescale all priorities by multiplying with:
-	//  2*totalVotingPower/(maxPriority - minPriority)
-	diffMax := PriorityWindowSizeFactor * vals.TotalVotingPower()
-	vals.RescalePriorities(diffMax)
-	vals.shiftByAvgProposerPriority()
+    diffMax := PriorityWindowSizeFactor * vals.TotalVotingPower()
+    vals.RescalePriorities(diffMax) 
+    vals.shiftByAvgProposerPriority()
 
-	var proposer *Validator
-	// Call IncrementProposerPriority(1) times times.
-	for i := int32(0); i < times; i++ {
-		proposer = vals.incrementProposerPriority()
-	}
+    var proposer *Validator
+    for i := int32(0); i < times; i++ {
+        proposer = vals.incrementProposerPriority()
+    }
 
-	vals.Proposer = proposer
-}
-
-// RescalePriorities rescales the priorities such that the distance between the
-// maximum and minimum is smaller than `diffMax`. Panics if validator set is
-// empty.
-func (vals *ValidatorSet) RescalePriorities(diffMax int64) {
-	if vals.IsNilOrEmpty() {
-		panic("empty validator set")
-	}
-	// NOTE: This check is merely a sanity check which could be
-	// removed if all tests would init. voting power appropriately;
-	// i.e. diffMax should always be > 0
-	if diffMax <= 0 {
-		return
-	}
-
-	// Calculating ceil(diff/diffMax):
-	// Re-normalization is performed by dividing by an integer for simplicity.
-	// NOTE: This may make debugging priority issues easier as well.
-	diff := computeMaxMinPriorityDiff(vals)
-	ratio := (diff + diffMax - 1) / diffMax
-	if diff > diffMax {
-		for _, val := range vals.Validators {
-			val.ProposerPriority /= ratio
-		}
-	}
-}
-
-func (vals *ValidatorSet) incrementProposerPriority() *Validator {
-	for _, val := range vals.Validators {
-		// Check for overflow for sum.
-		newPrio := safeAddClip(val.ProposerPriority, val.VotingPower)
-		val.ProposerPriority = newPrio
-	}
-	// Decrement the validator with most ProposerPriority.
-	mostest := vals.getValWithMostPriority()
-	// Mind the underflow.
-	mostest.ProposerPriority = safeSubClip(mostest.ProposerPriority, vals.TotalVotingPower())
-
-	return mostest
+    vals.Proposer = proposer
 }
 
 // Should not be called on an empty validator set.
