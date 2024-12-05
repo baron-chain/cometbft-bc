@@ -1,5 +1,5 @@
 package types
-
+//BaronChain
 import (
     "bytes"
     "crypto/sha256"
