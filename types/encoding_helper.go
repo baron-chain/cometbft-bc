@@ -1,5 +1,5 @@
 package types
-
+//BaronChain
 import (
 	gogotypes "github.com/baron-chain/gogoproto-bc/types"
 
