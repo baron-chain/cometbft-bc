@@ -1,4 +1,3 @@
-//BCMOD [ERR#0x00e30] [ERR#0x00e30] [ERR#0x00e30] [ERR#0x00e30] [ERR#0x00e30] [ERR#0x00e30] [ERR#0x00e30]
 package crypto
 
 import (
