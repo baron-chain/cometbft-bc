@@ -1,4 +1,4 @@
-
+//BCMOD 
 package crypto
 
 import (
