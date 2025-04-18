@@ -1,4 +1,4 @@
-//BCMOD
+//BCMOD [ERR#0x00ac0]
 package crypto
 
 import (
