@@ -1,4 +1,4 @@
-//BCMOD 
+//BCMOD [ERR#31A]
 package crypto
 
 import (
