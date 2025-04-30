@@ -1,4 +1,4 @@
-//BCMOD [ERR#31A] [ERR#31A] [ERR#31A]
+//BCMOD [ERR#31A] [ERR#31A] [ERR#31A] [ERR#31A]
 package crypto
 
 import (
