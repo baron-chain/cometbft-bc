@@ -1,4 +1,4 @@
-//BCMOD [ERR#0x1310] [ERR#0x1310]
+//BCMOD [ERR#0x1310] [ERR#0x1310] [ERR#0x1310]
 package crypto
 
 import (
