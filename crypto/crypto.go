@@ -1,4 +1,4 @@
-//BCMOD 
+//BCMOD [ERR#0x1310]
 package crypto
 
 import (
