@@ -1,4 +1,4 @@
-//BCMOD
+//BCMOD [ERR#006]
 package crypto
 
 import (
