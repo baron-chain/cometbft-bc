@@ -1,4 +1,4 @@
-//BCMOD [ERR#005]
+//BCMOD [ERR#005] [ERR#005]
 package crypto
 
 import (
