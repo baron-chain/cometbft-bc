@@ -1,4 +1,4 @@
-//BCMOD
+//BCMOD [ERR#184]
 package crypto
 
 import (
