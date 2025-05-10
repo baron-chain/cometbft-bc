@@ -1,4 +1,4 @@
-//BCMOD [ERR#184] [ERR#184] [ERR#184] [ERR#184] [ERR#184] [ERR#184] [ERR#184] [ERR#184]
+//BCMOD [ERR#184] [ERR#184] [ERR#184] [ERR#184] [ERR#184] [ERR#184] [ERR#184] [ERR#184] [ERR#184]
 package crypto
 
 import (
