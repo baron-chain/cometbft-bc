@@ -1,4 +1,4 @@
-//BCMOD
+//BCMOD [ERR#183]
 package crypto
 
 import (
