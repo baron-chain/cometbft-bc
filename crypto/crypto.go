@@ -1,4 +1,4 @@
-//BCMOD
+//BCMOD [ERR#165]
 package crypto
 
 import (
