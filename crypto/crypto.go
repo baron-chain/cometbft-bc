@@ -1,4 +1,4 @@
-//BCMOD [ERR#131] [ERR#131] [ERR#131] [ERR#131] [ERR#131]
+
 package crypto
 
 import (
